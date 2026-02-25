@@ -3,9 +3,10 @@ from streamlit_gsheets import GSheetsConnection
 import requests
 import pandas as pd
 from datetime import datetime, timezone, timedelta
+import dateutil.parser
 
 # --- CONFIG & SECRETS ---
-# Using your new verified API Key
+# Using your verified RapidAPI Key
 RAPID_API_KEY = "adcb96e431mshd1c8f0f5f76b8b2p1052a5jsn8d4db86ab77d"
 RAPID_API_HOST = "cricbuzz-cricket.p.rapidapi.com"
 SHEET_URL = st.secrets["GSHEET_URL"]
@@ -22,29 +23,27 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 with st.sidebar:
     st.header("🏆 League Rules")
     st.markdown("""
-    **Squad Rules:**
     - 🧤 **2** Wicketkeepers
     - 🏏 **Max 6** Batsmen
     - ⚡ **Min 1** All-rounder
     - 🎾 **Min 1** Bowler
-    
-    **Points Table:**
-    - 🏃 **1 Run:** 1 pt
-    - 🎾 **1 Wicket:** 25 pts
-    - ⭐ **Captain:** 2.0x | **VC:** 1.5x
+    ---
+    **Points:** Run=1 | Wicket=25
+    **Multipliers:** C=2x | VC=1.5x
     """)
-    if st.button("🔄 Force Refresh"):
+    if st.button("🔄 Force Refresh Data"):
         st.cache_data.clear()
         st.rerun()
 
 # --- API FUNCTIONS (CRICBUZZ MASTER LIST) ---
 @st.cache_data(ttl=300)
 def get_cricbuzz_matches():
+    # This endpoint gets the master list of all current/future games
     url = f"https://{RAPID_API_HOST}/matches/list"
     try:
         res = requests.get(url, headers=headers).json()
         match_data = []
-        # Cricbuzz nesting navigation
+        # Cricbuzz nesting: typeMatches -> seriesMatches -> seriesAdWrapper -> matches
         for m_type in res.get('typeMatches', []):
             for s_match in m_type.get('seriesMatches', []):
                 wrapper = s_match.get('seriesAdWrapper')
@@ -67,13 +66,13 @@ tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆
 
 # --- TAB 1: MATCH CENTER ---
 with tab1:
-    st.header("🏏 World Cup Match Center")
-    search_q = st.text_input("Search Team or Series:", "World Cup").strip().lower()
+    st.header("🏏 Cricbuzz World Cup Feed")
+    search_q = st.text_input("Search Team or Series:", "India").strip().lower()
     
     matches = get_cricbuzz_matches()
     
     if matches:
-        # Search filter
+        # Smart Filter
         filtered = [m for m in matches if search_q in m['name'].lower() or search_q in m['series'].lower()]
         
         # Categorize
@@ -91,7 +90,7 @@ with tab1:
             with st.container():
                 c1, c2, c3 = st.columns([2, 1, 1])
                 with c1:
-                    st.write(f"**{m['name']}**")
+                    st.markdown(f"**{m['name']}**")
                     st.caption(f"🏆 {m['series']}")
                     st.caption(f"🕒 {dt_ist.strftime('%d %b, %I:%M %p')} IST")
                 with c2:
@@ -112,4 +111,4 @@ with tab1:
                 st.write(f"**Series:** {m['series']}")
                 st.code(f"**Match ID:** {m['id']}")
     else:
-        st.error("No matches found. Ensure your new RapidAPI Key is active in your dashboard.")
+        st.error("No matches found. Please check your RapidAPI subscription for Cricbuzz.")
