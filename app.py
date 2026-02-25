@@ -102,11 +102,22 @@ with tab3:
 # --- TAB 4: HISTORY (HALL OF FAME) ---
 with tab4:
     st.header("📜 Past Winners")
-    all_history = conn.read(spreadsheet=SHEET_URL)
     
+    # --- SAFER READ LOGIC START ---
+    try:
+        # We use ttl=0 to make sure it doesn't show old "Permission Denied" errors from cache
+        all_history = conn.read(spreadsheet=SHEET_URL, ttl=0)
+    except Exception as e:
+        st.error("⚠️ Connection Error: Cannot reach Google Sheets.")
+        st.info("Check: 1. Is Google Drive API enabled? 2. Is the sheet shared with the service account email as Editor?")
+        # Create an empty table so the code below doesn't crash
+        all_history = pd.DataFrame(columns=["User", "Players", "Captain", "ViceCaptain", "MatchID"])
+    # --- SAFER READ LOGIC END ---
+
+    history_list = [] # Initialize this so the standings logic below doesn't error out
+
     if not all_history.empty:
         unique_matches = all_history['MatchID'].unique()
-        history_list = []
         
         for mid in unique_matches:
             # We calculate final scores for each match in history
@@ -116,7 +127,7 @@ with tab4:
             temp_leaderboard = []
             for _, row in hist_match_teams.iterrows():
                 u_total = 0
-                for p in row['Players'].split(","):
+                for p in str(row['Players']).split(","):
                     p_pts = hist_pts_map.get(p, 0)
                     mult = 2 if p == row['Captain'] else (1.5 if p == row['ViceCaptain'] else 1)
                     u_total += p_pts * mult
@@ -127,20 +138,21 @@ with tab4:
                 winner_row = max(temp_leaderboard, key=lambda x: x['Score'])
                 history_list.append({"Match ID": mid, "Winner": winner_row['User'], "Winning Score": winner_row['Score']})
         
-        st.dataframe(pd.DataFrame(history_list), use_container_width=True, hide_index=True)
+        if history_list:
+            st.dataframe(pd.DataFrame(history_list), use_container_width=True, hide_index=True)
+        else:
+            st.write("No winners declared yet.")
     else:
-        st.write("No history available yet.")
-        # --- ADD THIS TO THE BOTTOM OF TAB 4 ---
-st.divider()
-st.subheader("🏅 Season Standings (Most Wins)")
+        st.write("No history available yet. Submit a team in Tab 2 to start!")
 
-if history_list:
-    history_df = pd.DataFrame(history_list)
-    # Count how many times each user appears as a winner
-    standings = history_df['Winner'].value_counts().reset_index()
-    standings.columns = ['Family Member', 'Total Match Wins']
-    
-    # Display as a gold-styled leaderboard
-    st.dataframe(standings.style.highlight_max(axis=0, color='gold'), use_container_width=True, hide_index=True)
-else:
-    st.write("Play a match to see the season rankings!")
+    # --- SEASON STANDINGS (MOST WINS) ---
+    st.divider()
+    st.subheader("🏅 Season Standings (Most Wins)")
+
+    if history_list:
+        history_df = pd.DataFrame(history_list)
+        standings = history_df['Winner'].value_counts().reset_index()
+        standings.columns = ['Family Member', 'Total Match Wins']
+        st.dataframe(standings.style.highlight_max(axis=0, color='gold'), use_container_width=True, hide_index=True)
+    else:
+        st.write("Play a match to see the season rankings!")
