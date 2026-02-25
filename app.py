@@ -87,44 +87,51 @@ def get_scorecard(match_id):
 # --- DEFINE TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆 STANDINGS", "📜 HISTORY"])
 
-# --- TAB 1: MATCH CENTER ---
+# --- TAB 1: UNIVERSAL MATCH FINDER ---
 with tab1:
-    st.subheader("🔍 Find Your Series")
-    search = st.text_input("Enter Series Name (e.g. IPL, India, BBL)", placeholder="Type to filter...")
+    st.header("🏏 T20 World Cup Match Center")
+    search_query = st.text_input("Search Series:", "World Cup").lower() # Defaults to World Cup
     
     matches = get_live_matches()
+    
     if matches:
-        filtered = [m for m in matches if search.lower() in m['name'].lower()] if search else matches[:8]
+        # Filter for the series
+        series_matches = [m for m in matches if search_query in m.get('name', '').lower()]
         
-        for m in filtered:
-            with st.container():
-                # Logic for Time
+        if series_matches:
+            st.write(f"Showing {len(series_matches)} matches for '{search_query}':")
+            for m in series_matches:
+                # Time Calculations
                 match_time_gmt = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
                 match_time_ist = match_time_gmt + timedelta(hours=5, minutes=30)
                 now = datetime.now(timezone.utc)
                 diff = match_time_gmt - now
                 
-                col1, col2, col3 = st.columns([2, 1, 1])
-                with col1:
-                    st.markdown(f"### {m['name']}")
-                    st.caption(f"📅 IST: {match_time_ist.strftime('%d %b | %I:%M %p')}")
-                
-                with col2:
-                    if m['matchStarted']:
-                        st.success("🏏 IN PROGRESS")
-                    else:
-                        sec = diff.total_seconds()
-                        if sec > 0:
-                            h, rem = divmod(int(sec), 3600)
+                with st.container():
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.subheader(m['name'])
+                        st.caption(f"📅 {match_time_ist.strftime('%d %b, %I:%M %p')} IST")
+                        
+                        # Status Logic
+                        if m.get('matchStarted'):
+                            st.success(f"🏏 Status: {m['status']}")
+                        elif diff.total_seconds() > 0:
+                            h, rem = divmod(int(diff.total_seconds()), 3600)
                             m_left, _ = divmod(rem, 60)
-                            if sec < 1800: st.error(f"🚨 LOCKING: {m_left}m")
-                            else: st.warning(f"⏳ {h}h {m_left}m")
-                        else: st.info("TOSS TIME")
-                
-                with col3:
-                    st.write("Copy Match ID:")
-                    st.code(m['id'])
-                st.divider()
+                            label = f"🚨 LOCKING: {m_left}m" if diff.total_seconds() < 1800 else f"⏳ {h}h {m_left}m left"
+                            st.warning(label)
+                        else:
+                            st.info("🕒 Toss/Started")
+
+                    with col2:
+                        st.write("Match ID:")
+                        st.code(m['id'])
+                    st.divider()
+        else:
+            st.warning(f"No active matches found for '{search_query}'.")
+    else:
+        st.error("Could not fetch match data. Check your API key.")
 
 # --- TAB 2: CREATE TEAM ---
 with tab2:
