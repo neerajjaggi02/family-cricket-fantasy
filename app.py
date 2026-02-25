@@ -11,197 +11,95 @@ SHEET_URL = st.secrets["GSHEET_URL"]
 
 st.set_page_config(page_title="Mumbai City Fantasy", page_icon="🏏", layout="wide")
 
-# --- SIDEBAR: ALWAYS VISIBLE RULES ---
+# --- SIDEBAR (Always there) ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/5351/5351473.png", width=80)
     st.header("🏆 League Rules")
-    st.markdown("""
-    **Squad Requirements:**
-    - 🏏 **11** Players Total
-    - 🧤 **2** Wicketkeepers (Strict)
-    - 🏏 **Max 6** Batsmen
-    - ⚡ **Min 1** All-rounder
-    - 🎾 **Min 1** Bowler
-    
-    **Point System:**
-    - 🏃 **Run:** 1 pt
-    -  wickets **Wicket:** 25 pts
-    - ⭐ **Captain:** 2.0x
-    - 🎖️ **Vice-Cap:** 1.5x
-    """)
+    st.info("🧤 2 WK Required | 🏏 Max 6 Bat | ⚡ Min 1 AR | 🎾 Min 1 Bowl")
     st.divider()
-    if st.button("🔄 Refresh All Data"):
+    if st.button("🔄 FORCE REFRESH"):
         st.cache_data.clear()
         st.rerun()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- API FUNCTIONS ---
+# --- THE "AGGRESSIVE" API FETCH ---
 @st.cache_data(ttl=300)
-def get_all_matches():
-    # Hits both Current and Master list to ensure future games like India vs Zim show up
-    curr_url = f"https://api.cricapi.com/v1/currentMatches?apikey={API_KEY}&offset=0"
-    mast_url = f"https://api.cricapi.com/v1/matches?apikey={API_KEY}&offset=0"
-    try:
-        c = requests.get(curr_url).json().get('data', [])
-        m = requests.get(mast_url).json().get('data', [])
-        combined = {match['id']: match for match in (c + m)}.values()
-        return sorted(list(combined), key=lambda x: x['dateTimeGMT'])
-    except: return []
+def get_all_matches_v2():
+    # We hit multiple endpoints to ensure no match is missed
+    endpoints = [
+        f"https://api.cricapi.com/v1/currentMatches?apikey={API_KEY}&offset=0",
+        f"https://api.cricapi.com/v1/matches?apikey={API_KEY}&offset=0"
+    ]
+    all_raw = []
+    for url in endpoints:
+        try:
+            res = requests.get(url).json()
+            if res.get("status") == "success":
+                all_raw.extend(res.get("data", []))
+        except: continue
+    
+    # Remove duplicates by Match ID
+    unique_data = {m['id']: m for m in all_raw}.values()
+    return sorted(list(unique_data), key=lambda x: x['dateTimeGMT'])
 
-@st.cache_data(ttl=60)
-def get_squad_details(match_id):
-    url = f"https://api.cricapi.com/v1/match_squad?apikey={API_KEY}&id={match_id}"
-    try:
-        res = requests.get(url).json()
-        all_p = []
-        if res.get('status') == 'success':
-            for team in res['data']:
-                for p in team['players']:
-                    all_p.append({
-                        "name": p['name'],
-                        "role": p.get('role', 'batsman').lower(),
-                        "playing": p.get('status') == 'playing'
-                    })
-        return all_p
-    except: return []
-
-@st.cache_data(ttl=60)
-def get_scorecard(match_id):
-    if not match_id: return {}
-    url = f"https://api.cricapi.com/v1/match_scorecard?apikey={API_KEY}&id={match_id}"
-    try:
-        res = requests.get(url).json()
-        stats = {}
-        if res.get('status') == 'success' and res.get('data'):
-            for inning in res['data'].get('scorecard', []):
-                for b in inning.get('batting', []):
-                    stats[b['content']] = stats.get(b['content'], 0) + int(b.get('r', 0))
-                for bo in inning.get('bowling', []):
-                    stats[bo['content']] = stats.get(bo['content'], 0) + (int(bo.get('w', 0)) * 25)
-        return stats
-    except: return {}
-
-# --- DEFINE TABS ---
+# --- TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆 STANDINGS", "📜 HISTORY"])
 
 # --- TAB 1: MATCH CENTER ---
 with tab1:
-    search_q = st.text_input("🔍 Search Series or Team (e.g., 'India', 'World Cup'):", "").strip().lower()
-    all_m = get_all_matches()
+    st.subheader("🔍 Universal Match Finder")
+    # Default search to 'India' to help find the next big game immediately
+    s_query = st.text_input("Search Team or Series (e.g. India, World Cup):", "India").strip().lower()
     
-    if all_m:
-        # Smart Filter
-        filtered = [m for m in all_m if search_q in m.get('name', '').lower()] if search_q else all_m[:15]
+    data = get_all_matches_v2()
+    
+    if data:
+        # SEARCH LOGIC: Check name, series, and teams array
+        filtered = []
+        for m in data:
+            m_name = m.get('name', '').lower()
+            m_series = m.get('series_id', '').lower() # Some APIs put series name here
+            m_teams = [t.lower() for t in m.get('teams', [])]
+            
+            if s_query in m_name or s_query in m_series or any(s_query in t for t in m_teams):
+                filtered.append(m)
         
-        # Split logic
-        now = datetime.now(timezone.utc)
-        live_comp = []
-        upcoming = []
-        
-        for m in filtered:
-            match_time = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
-            if m.get('matchStarted') or now > match_time:
-                live_comp.append(m)
-            else:
-                upcoming.append(m)
+        if filtered:
+            # Split into Current and Future
+            now = datetime.now(timezone.utc)
+            
+            # --- SECTION: UPCOMING ---
+            st.markdown("### 📅 Upcoming Fixtures")
+            upcoming_found = False
+            for m in filtered:
+                match_time = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
+                if match_time > now and not m.get('matchStarted'):
+                    upcoming_found = True
+                    ist_t = match_time + timedelta(hours=5, minutes=30)
+                    diff = match_time - now
+                    with st.container():
+                        c1, c2, c3 = st.columns([2, 1, 1])
+                        with c1:
+                            st.markdown(f"**{m['name']}**")
+                            st.caption(f"🕒 {ist_t.strftime('%d %b, %I:%M %p')} IST")
+                        with c2:
+                            h, rem = divmod(int(diff.total_seconds()), 3600)
+                            ml, _ = divmod(rem, 60)
+                            st.warning(f"⏳ {h}h {ml}m left")
+                        with c3:
+                            st.code(m['id'])
+                        st.divider()
+            if not upcoming_found: st.write("No future matches found for this search.")
 
-        # ⏳ SECTION 1: UPCOMING
-        st.header("📅 Upcoming Matches")
-        if upcoming:
-            for m in upcoming:
-                gmt_t = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
-                ist_t = gmt_t + timedelta(hours=5, minutes=30)
-                diff = gmt_t - now
-                
-                with st.container():
-                    c1, c2, c3 = st.columns([2, 1, 1])
-                    with c1:
-                        st.subheader(m['name'])
-                        st.write(f"⏰ IST: {ist_t.strftime('%d %b, %I:%M %p')}")
-                    with c2:
-                        h, rem = divmod(int(diff.total_seconds()), 3600)
-                        ml, _ = divmod(rem, 60)
-                        if diff.total_seconds() < 1800: st.error(f"🚨 LOCKING: {ml}m left")
-                        else: st.warning(f"⏳ {h}h {ml}m left")
-                    with c3:
-                        st.write("Match ID:")
-                        st.code(m['id'])
-                    st.divider()
-        else: st.info("No upcoming matches found for this search.")
-
-        # 🏁 SECTION 2: LIVE / RECENT
-        st.header("🏁 Live & Recent")
-        if live_comp:
-            for m in reversed(live_comp[-8:]):
-                with st.expander(f"{m['name']} ({m['status']})"):
-                    st.write(f"**Status:** {m['status']}")
-                    st.code(f"Match ID: {m['id']}")
-    else: st.error("No data found. Check your API key.")
-
-# --- TAB 2: CREATE TEAM ---
-with tab2:
-    st.subheader("📝 Join the Match")
-    mid = st.text_input("Enter Match ID from Match Center:")
-    if mid:
-        m_list = get_all_matches()
-        m_info = next((m for m in m_list if m['id'] == mid), None)
-        
-        if m_info:
-            gmt_start = dateutil.parser.isoparse(m_info['dateTimeGMT']).replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) >= gmt_start or m_info.get('matchStarted'):
-                st.error("🔒 Entry Denied: The match has already started!")
-            else:
-                squad = get_squad_details(mid)
-                if squad:
-                    df_sq = pd.DataFrame(squad)
-                    with st.form("team_entry"):
-                        u_name = st.text_input("Your Name:")
-                        opts = [f"{p['name']} ({p['role']}) - {'✅ Playing' if p['playing'] else '❌ Sub'}" for _, p in df_sq.iterrows()]
-                        sel = st.multiselect("Select 11 Players:", opts)
-                        names = [o.split(" (")[0] for o in sel]
-                        roles = [df_sq[df_sq['name'] == n]['role'].values[0] for n in names]
-                        wk, bat, ar, bowl = roles.count('wicketkeeper'), roles.count('batsman'), roles.count('allrounder'), roles.count('bowler')
-                        
-                        st.write(f"**Squad Balance:** 🧤WK: {wk}/2 | 🏏BAT: {bat}/6 | ⚡AR: {ar}/min1 | 🎾BOWL: {bowl}/min1")
-                        c = st.selectbox("Captain (2x):", names if names else ["Select 11"])
-                        vc = st.selectbox("Vice-Captain (1.5x):", [n for n in names if n != c] if names else ["Select 11"])
-                        
-                        if st.form_submit_button("LOCK SQUAD"):
-                            if len(sel) == 11 and wk == 2 and bat <= 6 and ar >= 1 and bowl >= 1:
-                                row = pd.DataFrame([{"User": u_name, "Players": ",".join(names), "Captain": c, "ViceCaptain": vc, "MatchID": mid}])
-                                curr_sheet = conn.read(spreadsheet=SHEET_URL)
-                                conn.update(spreadsheet=SHEET_URL, data=pd.concat([curr_sheet, row]))
-                                st.balloons()
-                                st.success("Team saved successfully!")
-                            else: st.error("❌ Rules Violation: Check 11 total and role counts.")
-
-# --- TAB 3: STANDINGS ---
-with tab3:
-    st.subheader("🏆 Live Leaderboard")
-    tid = st.text_input("Enter Match ID for Live Points:")
-    if tid:
-        p_map = get_scorecard(tid)
-        hist = conn.read(spreadsheet=SHEET_URL)
-        teams = hist[hist['MatchID'] == tid]
-        if not teams.empty:
-            res = [{"Member": r['User'], "Points": sum(p_map.get(p,0)*(2 if p==r['Captain'] else 1.5 if p==r['ViceCaptain'] else 1) for p in str(r['Players']).split(","))} for _, r in teams.iterrows()]
-            st.dataframe(pd.DataFrame(res).sort_values("Points", ascending=False), use_container_width=True, hide_index=True)
-        else: st.info("No teams submitted for this ID.")
-
-# --- TAB 4: HISTORY ---
-with tab4:
-    st.subheader("📜 Hall of Fame")
-    try:
-        hall = conn.read(spreadsheet=SHEET_URL, ttl=0)
-        if not hall.empty:
-            summary = []
-            for m in hall['MatchID'].unique():
-                pts = get_scorecard(m)
-                tms = hall[hall['MatchID'] == m]
-                scr = [{"U": r['User'], "P": sum(pts.get(p,0)*(2 if p==r['Captain'] else 1.5 if p==r['ViceCaptain'] else 1) for p in str(r['Players']).split(","))} for _, r in tms.iterrows()]
-                if scr:
-                    win = max(scr, key=lambda x: x['P'])
-                    summary.append({"Match": m, "Winner": win['U'], "Score": win['P']})
-            st.table(pd.DataFrame(summary))
-    except: st.warning("Connect your sheet to see history.")
+            # --- SECTION: LIVE/COMPLETED ---
+            st.markdown("### 🏁 Live & Recent")
+            for m in filtered:
+                match_time = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
+                if m.get('matchStarted') or now >= match_time:
+                    with st.expander(f"{m['name']} ({m.get('status', 'Recent')})"):
+                        st.write(f"Match ID: `{m['id']}`")
+                        st.write(f"Venue: {m.get('venue')}")
+        else:
+            st.warning(f"No results for '{s_query}'. Try searching just 'ICC' or 'Cup'.")
+    else:
+        st.error("API Error: No data returned. Please check your internet or API key limits.")
