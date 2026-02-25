@@ -11,7 +11,7 @@ st.set_page_config(page_title="Family Fantasy Pro", page_icon="🏏", layout="wi
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- API FUNCTIONS ---
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=300)
 def get_live_matches():
     url = f"https://api.cricapi.com/v1/currentMatches?apikey={API_KEY}&offset=0"
     return requests.get(url).json().get('data', [])
@@ -23,17 +23,13 @@ def get_scorecard(match_id):
     player_stats = {}
     if res.get('status') == 'success':
         data = res.get('data', {})
-        # Process Batting
         for inning in data.get('scorecard', []):
             for batter in inning.get('batting', []):
                 name = batter['content']
-                r = int(batter.get('r', 0))
-                player_stats[name] = player_stats.get(name, 0) + r
-            # Process Bowling
+                player_stats[name] = player_stats.get(name, 0) + int(batter.get('r', 0))
             for bowler in inning.get('bowling', []):
                 name = bowler['content']
-                w = int(bowler.get('w', 0))
-                player_stats[name] = player_stats.get(name, 0) + (w * 25) # 25 pts per wicket
+                player_stats[name] = player_stats.get(name, 0) + (int(bowler.get('w', 0)) * 25)
     return player_stats
 
 @st.cache_data(ttl=3600)
@@ -47,7 +43,7 @@ def get_squad(match_id):
     return players
 
 # --- UI TABS ---
-tab1, tab2, tab3 = st.tabs(["📺 Live Scores", "📝 Create Team", "🏆 Leaderboard"])
+tab1, tab2, tab3, tab4 = st.tabs(["📺 Live Scores", "📝 Create Team", "🏆 Leaderboard", "📜 History"])
 
 # --- TAB 1: LIVE SCORES ---
 with tab1:
@@ -69,9 +65,9 @@ with tab2:
         if player_pool:
             with st.form("team_form"):
                 user = st.text_input("Your Name:")
-                selected = st.multiselect("Select 11 Players:", player_pool, max_selections=11)
-                cap = st.selectbox("Captain (2x):", selected if selected else ["Select 11 players first"])
-                vc = st.selectbox("Vice-Captain (1.5x):", [p for p in selected if p != cap] if selected else ["Select 11 players first"])
+                selected = st.multiselect("Pick 11 Players:", player_pool, max_selections=11)
+                cap = st.selectbox("Captain (2x):", selected if selected else ["Pick 11 players"])
+                vc = st.selectbox("Vice-Captain (1.5x):", [p for p in selected if p != cap] if selected else ["Pick 11 players"])
                 submit = st.form_submit_button("Save Team")
                 
                 if submit and len(selected) == 11:
@@ -83,14 +79,10 @@ with tab2:
 
 # --- TAB 3: LEADERBOARD ---
 with tab3:
-    st.header("Fantasy Rankings")
-    active_id = st.text_input("Enter Match ID to calculate points:")
-    
+    st.header("Live Rankings")
+    active_id = st.text_input("Enter Match ID to see Live Points:")
     if active_id:
-        # 1. Fetch live player points for this match
         pts_map = get_scorecard(active_id)
-        
-        # 2. Get saved teams
         all_teams = conn.read(spreadsheet=SHEET_URL)
         match_teams = all_teams[all_teams['MatchID'] == active_id]
         
@@ -98,20 +90,43 @@ with tab3:
             leaderboard = []
             for _, row in match_teams.iterrows():
                 u_total = 0
-                p_list = row['Players'].split(",")
-                for p in p_list:
-                    p_pts = pts_map.get(p, 0) # Get real points from scorecard
-                    if p == row['Captain']: u_total += p_pts * 2
-                    elif p == row['ViceCaptain']: u_total += p_pts * 1.5
-                    else: u_total += p_pts
+                for p in row['Players'].split(","):
+                    p_pts = pts_map.get(p, 0)
+                    mult = 2 if p == row['Captain'] else (1.5 if p == row['ViceCaptain'] else 1)
+                    u_total += p_pts * mult
                 leaderboard.append({"User": row['User'], "Score": u_total})
-            
-            final_df = pd.DataFrame(leaderboard).sort_values("Score", ascending=False)
-            st.table(final_df)
-            
-            if not final_df.empty:
-                winner = final_df.iloc[0]['User']
-                st.balloons()
-                st.success(f"🔥 Current Leader: **{winner}** with {final_df.iloc[0]['Score']} points!")
+            st.table(pd.DataFrame(leaderboard).sort_values("Score", ascending=False))
         else:
-            st.warning("No teams found for this Match ID.")
+            st.info("No teams submitted for this Match ID yet.")
+
+# --- TAB 4: HISTORY (HALL OF FAME) ---
+with tab4:
+    st.header("📜 Past Winners")
+    all_history = conn.read(spreadsheet=SHEET_URL)
+    
+    if not all_history.empty:
+        unique_matches = all_history['MatchID'].unique()
+        history_list = []
+        
+        for mid in unique_matches:
+            # We calculate final scores for each match in history
+            hist_pts_map = get_scorecard(mid)
+            hist_match_teams = all_history[all_history['MatchID'] == mid]
+            
+            temp_leaderboard = []
+            for _, row in hist_match_teams.iterrows():
+                u_total = 0
+                for p in row['Players'].split(","):
+                    p_pts = hist_pts_map.get(p, 0)
+                    mult = 2 if p == row['Captain'] else (1.5 if p == row['ViceCaptain'] else 1)
+                    u_total += p_pts * mult
+                temp_leaderboard.append({"User": row['User'], "Score": u_total})
+            
+            # Find the winner for this specific MatchID
+            if temp_leaderboard:
+                winner_row = max(temp_leaderboard, key=lambda x: x['Score'])
+                history_list.append({"Match ID": mid, "Winner": winner_row['User'], "Winning Score": winner_row['Score']})
+        
+        st.dataframe(pd.DataFrame(history_list), use_container_width=True, hide_index=True)
+    else:
+        st.write("No history available yet.")
