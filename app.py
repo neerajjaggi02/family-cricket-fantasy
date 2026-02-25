@@ -6,8 +6,9 @@ from datetime import datetime, timezone, timedelta
 import dateutil.parser
 
 # --- CONFIG & SECRETS ---
+# Using your new verified API Key and Host
 RAPID_API_KEY = "adcb96e431mshd1c8f0f5f76b8b2p1052a5jsn8d4db86ab77d"
-RAPID_API_HOST = "free-cricbuzz-cricket-api.p.rapidapi.com"
+RAPID_API_HOST = "cricket-live-line1.p.rapidapi.com"
 SHEET_URL = st.secrets["GSHEET_URL"]
 
 headers = {
@@ -18,47 +19,45 @@ headers = {
 st.set_page_config(page_title="Mumbai Fantasy Pro", page_icon="🏏", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- SIDEBAR: ALWAYS VISIBLE RULES ---
+# --- SIDEBAR: FIXED RULES ---
 with st.sidebar:
     st.header("🏆 League Rules")
     st.markdown("""
+    **Squad Mix:**
     - 🧤 **2** Wicketkeepers
     - 🏏 **Max 6** Batsmen
     - ⚡ **Min 1** All-rounder
     - 🎾 **Min 1** Bowler
     ---
     **Points:** Run=1 | Wicket=25
-    **Multipliers:** C=2x | VC=1.5x
+    **Timezone:** Mumbai (IST)
     """)
     if st.button("🔄 Force Refresh Data"):
         st.cache_data.clear()
         st.rerun()
 
-# --- API FUNCTIONS (FREE CRICBUZZ ADAPTER) ---
+# --- API FUNCTIONS (LIVE LINE ADAPTER) ---
 @st.cache_data(ttl=300)
-def get_matches():
-    # Fetching the main match list from the Free API
-    url = f"https://{RAPID_API_HOST}/matches" # Adjusting endpoint based on common Free API structures
+def get_live_line_matches():
+    # Attempting to fetch the match list from the new host
+    # Note: Using /matchList as it is a common endpoint for this host
+    url = f"https://{RAPID_API_HOST}/matchList/upcoming"
     try:
-        response = requests.get(url, headers=headers)
-        res = response.json()
-        
-        # Mapping the Free API's response to our app's needs
+        res = requests.get(url, headers=headers).json()
         match_data = []
-        # Note: The 'free' API often returns a list directly or under 'matches'
-        matches = res.get('matches', res) if isinstance(res, dict) else res
-        
+        # Live Line 1 often returns a 'data' object with a list
+        matches = res.get('data', [])
         for m in matches:
             match_data.append({
-                'id': m.get('match_id', m.get('id')),
-                'name': m.get('match_name', f"{m.get('team1')} vs {m.get('team2')}"),
-                'series': m.get('series_name', 'International'),
-                'status': m.get('status', 'Upcoming'),
-                'timestamp': m.get('start_date', 0),
-                'state': m.get('state', 'Upcoming')
+                'id': m.get('match_id'),
+                'name': f"{m.get('team_a')} vs {m.get('team_b')}",
+                'series': m.get('series_name'),
+                'status': m.get('match_status'),
+                'timestamp': m.get('match_date_time'), # Usually ISO or Epoch
+                'is_live': m.get('is_live', 0)
             })
         return match_data
-    except Exception as e:
+    except:
         return []
 
 # --- MAIN TABS ---
@@ -66,28 +65,30 @@ tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆
 
 # --- TAB 1: MATCH CENTER ---
 with tab1:
-    st.header("🏏 Match Center")
-    search_q = st.text_input("Search Team or Series (e.g., 'India'):", "India").strip().lower()
+    st.header("🏏 Match Center (Live Line)")
+    search_q = st.text_input("Search Team (e.g., 'India'):", "India").strip().lower()
     
-    matches = get_matches()
+    matches = get_live_line_matches()
     
     if matches:
-        filtered = [m for m in matches if search_q in str(m['name']).lower()]
+        filtered = [m for m in matches if search_q in str(m['name']).lower() or search_q in str(m['series']).lower()]
         
-        # Filter for Upcoming vs Completed
-        upcoming = [m for m in filtered if m['state'].lower() == 'upcoming']
-        live_done = [m for m in filtered if m['state'].lower() != 'upcoming']
+        # Sectioning: Live vs Upcoming
+        live_now = [m for m in filtered if m['is_live'] == 1]
+        upcoming = [m for m in filtered if m['is_live'] == 0]
 
+        # ⏳ SECTION 1: UPCOMING (Focus for Feb 26)
         st.subheader("📅 Upcoming Fixtures")
         if not upcoming: st.info("No upcoming matches found.")
         for m in upcoming:
             # Handle IST Conversion
-            # Assuming Free API uses ISO string or Epoch
             try:
-                dt = dateutil.parser.isoparse(m['timestamp']) if isinstance(m['timestamp'], str) else datetime.fromtimestamp(m['timestamp'])
+                dt = dateutil.parser.isoparse(m['timestamp'])
                 ist_t = dt.replace(tzinfo=timezone.utc) + timedelta(hours=5, minutes=30)
+                diff = ist_t - (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30))
             except:
-                ist_t = datetime.now() # Fallback
+                ist_t = datetime.now()
+                diff = timedelta(0)
 
             with st.container():
                 c1, c2, c3 = st.columns([2, 1, 1])
@@ -96,21 +97,20 @@ with tab1:
                     st.caption(f"🏆 {m['series']}")
                     st.caption(f"🕒 {ist_t.strftime('%d %b, %I:%M %p')} IST")
                 with c2:
-                    st.warning("⏳ Entry Open")
+                    if diff.total_seconds() > 0:
+                        h, rem = divmod(int(diff.total_seconds()), 3600)
+                        ml, _ = divmod(rem, 60)
+                        st.warning(f"⏳ {h}h {ml}m left")
+                    else: st.info("🚀 Toss Soon")
                 with c3:
                     st.write("Match ID:")
                     st.code(m['id'])
                 st.divider()
 
+        # 🏁 SECTION 2: IN-PROGRESS / RECENT
         st.subheader("🏁 Live & Recent")
-        for m in live_done:
-            with st.expander(f"{m['name']} - {m['status']}"):
+        for m in live_now:
+            with st.expander(f"LIVE: {m['name']} - {m['status']}"):
                 st.code(f"Match ID: {m['id']}")
     else:
-        st.warning("No matches found. Check if your new RapidAPI Host is active.")
-
-# --- TAB 2: CREATE TEAM (LOGIC) ---
-with tab2:
-    st.subheader("📝 Submit Your Team")
-    # ... Rest of your existing Team Creation logic ...
-    st.info("Paste the Match ID from Tab 1 to start building your squad.")
+        st.error("📡 No matches found. Check if 'Cricket Live Line 1' is active in your RapidAPI dashboard.")
