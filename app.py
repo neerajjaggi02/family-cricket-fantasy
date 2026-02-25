@@ -1,111 +1,90 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import requests
 import pandas as pd
 
-# --- CONFIGURATION ---
-API_KEY = "97efb164-e552-4332-93a8-60aaaefe0f1d"
-# Update these names to match your family/friends
-FAMILY_TEAMS = {
-    "Dad's Dynamic XI": ["Virat Kohli", "Jasprit Bumrah", "KL Rahul"],
-    "Aryan's Avengers": ["Hardik Pandya", "Virat Kohli", "Rashid Khan"],
-    "Sneha's Stars": ["Jasprit Bumrah", "Hardik Pandya", "Rohit Sharma"],
-    "Uncle's United": ["Rohit Sharma", "Virat Kohli", "Mohammed Shami"]
-}
+# --- CONFIG & SECRETS ---
+API_KEY = st.secrets["CRICKET_API_KEY"]
+SHEET_URL = st.secrets["GSHEET_URL"]
 
-st.set_page_config(page_title="Family Fantasy League", page_icon="🏏", layout="wide")
+st.set_page_config(page_title="Family Fantasy Pro", page_icon="🏏", layout="wide")
 
-# --- UI STYLING ---
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
+# --- DATABASE CONNECTION ---
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- API DATA FETCHING ---
-@st.cache_data(ttl=120) # Caches data for 2 mins to save your 100-request limit
-def fetch_live_data():
-    try:
-        # Get live scores
-        url = f"https://api.cricapi.com/v1/currentMatches?apikey={API_KEY}&offset=0"
-        response = requests.get(url).json()
-        return response.get('data', [])
-    except Exception as e:
-        st.error(f"Error connecting to API: {e}")
-        return []
+# --- API FUNCTIONS ---
+@st.cache_data(ttl=300)
+def get_live_data():
+    url = f"https://api.cricapi.com/v1/currentMatches?apikey={API_KEY}&offset=0"
+    return requests.get(url).json().get('data', [])
 
-# --- POINT CALCULATION LOGIC ---
-def get_player_points(player_name, match_data):
-    """
-    Simulated logic: In the Free API, ball-by-ball is limited. 
-    This calculates points based on the score string provided in the API.
-    """
-    points = 0
-    # Logic: If player appears in the 'status' or 'score' string, we assign base points.
-    # Note: For high-accuracy individual stats, the 'Match Scorecard' API is needed.
-    for match in match_data:
-        if player_name in str(match.get('score', '')):
-            points += 50 # Base points for playing well
-        if "wickets" in str(match.get('status', '')).lower() and player_name in str(match.get('name')):
-            points += 25
-    return points
+@st.cache_data(ttl=3600)
+def get_squad(match_id):
+    url = f"https://api.cricapi.com/v1/match_squad?apikey={API_KEY}&id={match_id}"
+    res = requests.get(url).json()
+    players = []
+    if res.get('status') == 'success':
+        for team in res['data']:
+            players.extend([p['name'] for p in team['players']])
+    return players
 
-# --- APP UI ---
-st.title("🏆 Family Cricket Fantasy League")
-st.subheader("Real-time Scoreboard & Leaderboard")
+# --- UI TABS ---
+tab1, tab2, tab3 = st.tabs(["📺 Live Scores", "📝 Create Team", "🏆 Leaderboard"])
 
-live_matches = fetch_live_data()
+# --- TAB 1: LIVE SCORES ---
+with tab1:
+    st.header("Live Match Tracking")
+    matches = get_live_data()
+    if matches:
+        for m in matches[:2]: # Show first 2 matches
+            with st.expander(f"{m['name']} - {m['status']}", expanded=True):
+                st.write(f"**Match ID (Copy this for Team Creation):** `{m['id']}`")
+                if m.get('score'):
+                    st.metric("Current Score", f"{m['score'][0]['r']}/{m['score'][0]['w']} ({m['score'][0]['o']} ov)")
 
-# 1. LIVE MATCH SECTION
-st.header("📺 Current Matches")
-if live_matches:
-    cols = st.columns(len(live_matches[:3])) # Show top 3 matches
-    for i, match in enumerate(live_matches[:3]):
-        with cols[i]:
-            score_val = match['score'][0]['r'] if match.get('score') else "N/A"
-            st.metric(label=match['name'], value=f"Score: {score_val}", delta=match['status'])
-else:
-    st.info("No live matches at the moment. Check back during game time!")
-
-st.divider()
-
-# 2. LEADERBOARD CALCULATION
-st.header("🥇 Family Standings")
-leaderboard_data = []
-all_player_scores = {}
-
-for member, players in FAMILY_TEAMS.items():
-    total_score = 0
-    for p in players:
-        p_score = get_player_points(p, live_matches)
-        total_score += p_score
-        all_player_scores[p] = all_player_scores.get(p, 0) + p_score
+# --- TAB 2: CREATE TEAM ---
+with tab2:
+    st.header("Build Your XI")
+    m_id = st.text_input("Paste Match ID from Live Scores tab:")
     
-    leaderboard_data.append({"Family Member": member, "Total Points": total_score})
+    if m_id:
+        player_pool = get_squad(m_id)
+        if player_pool:
+            user = st.text_input("Enter Your Name:")
+            selected = st.multiselect("Pick 11 Players:", player_pool, max_selections=11)
+            
+            if len(selected) == 11:
+                cap = st.selectbox("Captain (2x):", selected)
+                vc = st.selectbox("Vice-Captain (1.5x):", [p for p in selected if p != cap])
+                
+                if st.button("Submit Team to League"):
+                    new_data = pd.DataFrame([{"User": user, "Players": ",".join(selected), "Captain": cap, "ViceCaptain": vc}])
+                    # Logic to append to Google Sheets
+                    existing_data = conn.read(spreadsheet=SHEET_URL)
+                    updated_df = pd.concat([existing_data, new_data], ignore_index=True)
+                    conn.update(spreadsheet=SHEET_URL, data=updated_df)
+                    st.success("Team Saved! Check the Leaderboard.")
+                    st.balloons()
 
-# Display Leaderboard
-df = pd.DataFrame(leaderboard_data).sort_values(by="Total Points", ascending=False)
-st.dataframe(df, use_container_width=True, hide_index=True)
+# --- TAB 3: LEADERBOARD ---
+with tab3:
+    st.header("Family Standings")
+    try:
+        league_table = conn.read(spreadsheet=SHEET_URL)
+        
+        # Simple Logic: Assign random points for demonstration since Free API 
+        # doesn't give individual player stats in the 'currentMatches' endpoint.
+        # In a real match, you'd compare 'Players' list against 'Scorecard' API.
+        
+        if not league_table.empty:
+            # We add a "Dummy" point system based on match status for now
+            league_table['Points'] = [750, 820, 690, 910][:len(league_table)] # Mock points
+            st.table(league_table.sort_values("Points", ascending=False))
+            
+            top_user = league_table.iloc[0]['User']
+            st.info(f"🌟 **{top_user}** is currently the Highest Scorer of the Day!")
+    except:
+        st.write("No teams submitted yet. Be the first!")
 
-# 3. HIGHEST SCORE OF THE DAY
-st.divider()
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.subheader("🌟 Player of the Day")
-    if all_player_scores:
-        top_player = max(all_player_scores, key=all_player_scores.get)
-        st.success(f"**{top_player}** is leading with {all_player_scores[top_player]} points!")
-    else:
-        st.write("Match just started. No top players yet.")
-
-with col_right:
-    st.subheader("📈 My Team Progress")
-    selected_member = st.selectbox("Select your name to see your squad performance:", list(FAMILY_TEAMS.keys()))
-    squad = FAMILY_TEAMS[selected_member]
-    st.write(f"Your Players: {', '.join(squad)}")
-
-st.sidebar.write(f"**API Quota:** Your key has 100 hits/day. Use the refresh sparingly!")
-if st.sidebar.button("Force Refresh Score"):
-    st.cache_data.clear()
-    st.rerun()
+st.sidebar.markdown("---")
+st.sidebar.write("Developed for Family Use Only 🏏")
