@@ -1,4 +1,7 @@
 streamlit
 requests
 pandas
+streamlit
 st-gsheets-connection
+pandas
+requests
