@@ -18,19 +18,43 @@ def get_live_matches():
 
 @st.cache_data(ttl=60)
 def get_scorecard(match_id):
+    # Safety check: if match_id is empty or NaN, return empty stats
+    if not match_id or pd.isna(match_id):
+        return {}
+        
     url = f"https://api.cricapi.com/v1/match_scorecard?apikey={API_KEY}&id={match_id}"
-    res = requests.get(url).json()
-    player_stats = {}
-    if res.get('status') == 'success':
-        data = res.get('data', {})
-        for inning in data.get('scorecard', []):
-            for batter in inning.get('batting', []):
-                name = batter['content']
-                player_stats[name] = player_stats.get(name, 0) + int(batter.get('r', 0))
-            for bowler in inning.get('bowling', []):
-                name = bowler['content']
-                player_stats[name] = player_stats.get(name, 0) + (int(bowler.get('w', 0)) * 25)
-    return player_stats
+    try:
+        response = requests.get(url)
+        # Check if the API returned a 200 OK status
+        if response.status_code != 200:
+            return {}
+            
+        res = response.json()
+        player_stats = {}
+        
+        if res.get('status') == 'success' and res.get('data'):
+            data = res.get('data', {})
+            # Process scorecard safely
+            scorecard = data.get('scorecard', [])
+            if not scorecard:
+                return {}
+                
+            for inning in scorecard:
+                # Process Batting
+                for batter in inning.get('batting', []):
+                    name = batter.get('content', 'Unknown')
+                    runs = batter.get('r', 0)
+                    # Convert to int safely
+                    player_stats[name] = player_stats.get(name, 0) + int(runs if str(runs).isdigit() else 0)
+                
+                # Process Bowling
+                for bowler in inning.get('bowling', []):
+                    name = bowler.get('content', 'Unknown')
+                    wickets = bowler.get('w', 0)
+                    player_stats[name] = player_stats.get(name, 0) + (int(wickets if str(wickets).isdigit() else 0) * 25)
+        return player_stats
+    except Exception:
+        return {} # Return empty dict if API fails or JSON is invalid
 
 @st.cache_data(ttl=3600)
 def get_squad(match_id):
