@@ -130,3 +130,17 @@ with tab4:
         st.dataframe(pd.DataFrame(history_list), use_container_width=True, hide_index=True)
     else:
         st.write("No history available yet.")
+        # --- ADD THIS TO THE BOTTOM OF TAB 4 ---
+st.divider()
+st.subheader("🏅 Season Standings (Most Wins)")
+
+if history_list:
+    history_df = pd.DataFrame(history_list)
+    # Count how many times each user appears as a winner
+    standings = history_df['Winner'].value_counts().reset_index()
+    standings.columns = ['Family Member', 'Total Match Wins']
+    
+    # Display as a gold-styled leaderboard
+    st.dataframe(standings.style.highlight_max(axis=0, color='gold'), use_container_width=True, hide_index=True)
+else:
+    st.write("Play a match to see the season rankings!")
