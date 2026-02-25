@@ -5,8 +5,8 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 
 # --- CONFIG & SECRETS ---
-# Use your provided RapidAPI credentials
-RAPID_API_KEY = "97efb164-e552-4332-93a8-60aaaefe0f1d"
+# Using your new verified API Key
+RAPID_API_KEY = "adcb96e431mshd1c8f0f5f76b8b2p1052a5jsn8d4db86ab77d"
 RAPID_API_HOST = "cricbuzz-cricket.p.rapidapi.com"
 SHEET_URL = st.secrets["GSHEET_URL"]
 
@@ -18,36 +18,39 @@ headers = {
 st.set_page_config(page_title="Mumbai Fantasy Pro", page_icon="🏏", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- SIDEBAR RULES ---
+# --- SIDEBAR: ALWAYS VISIBLE RULES ---
 with st.sidebar:
     st.header("🏆 League Rules")
     st.markdown("""
-    - **Total Players:** 11
-    - **Wicketkeepers:** Exactly 2
-    - **Batsmen:** Max 6
-    - **All-rounders:** Min 1
-    - **Bowlers:** Min 1
-    ---
-    **Scoring:** Run=1pt, Wicket=25pts
+    **Squad Rules:**
+    - 🧤 **2** Wicketkeepers
+    - 🏏 **Max 6** Batsmen
+    - ⚡ **Min 1** All-rounder
+    - 🎾 **Min 1** Bowler
+    
+    **Points Table:**
+    - 🏃 **1 Run:** 1 pt
+    - 🎾 **1 Wicket:** 25 pts
+    - ⭐ **Captain:** 2.0x | **VC:** 1.5x
     """)
     if st.button("🔄 Force Refresh"):
         st.cache_data.clear()
         st.rerun()
 
-# --- ROBUST CRICBUZZ API FETCH ---
+# --- API FUNCTIONS (CRICBUZZ MASTER LIST) ---
 @st.cache_data(ttl=300)
 def get_cricbuzz_matches():
-    url = f"https://{RAPID_API_HOST}/matches/list/upcoming"
+    url = f"https://{RAPID_API_HOST}/matches/list"
     try:
         res = requests.get(url, headers=headers).json()
         match_data = []
-        # Cricbuzz nesting: typeMatches -> seriesMatches -> seriesAdWrapper -> matches
-        for match_type in res.get('typeMatches', []):
-            for series_container in match_type.get('seriesMatches', []):
-                wrapper = series_container.get('seriesAdWrapper')
+        # Cricbuzz nesting navigation
+        for m_type in res.get('typeMatches', []):
+            for s_match in m_type.get('seriesMatches', []):
+                wrapper = s_match.get('seriesAdWrapper')
                 if wrapper:
-                    for match in wrapper.get('matches', []):
-                        info = match.get('matchInfo', {})
+                    for m in wrapper.get('matches', []):
+                        info = m.get('matchInfo', {})
                         match_data.append({
                             'id': info.get('matchId'),
                             'name': f"{info.get('team1', {}).get('teamName')} vs {info.get('team2', {}).get('teamName')}",
@@ -57,33 +60,34 @@ def get_cricbuzz_matches():
                             'state': info.get('state') # Upcoming, Live, or Complete
                         })
         return match_data
-    except Exception as e:
-        st.error(f"API Error: {e}")
-        return []
+    except: return []
 
-# --- UI TABS ---
+# --- MAIN TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆 STANDINGS", "📜 HISTORY"])
 
 # --- TAB 1: MATCH CENTER ---
 with tab1:
-    st.header("🏏 Cricbuzz Live Feed")
-    search_q = st.text_input("Filter by Series or Team (e.g., 'World Cup', 'India'):", "").lower()
+    st.header("🏏 World Cup Match Center")
+    search_q = st.text_input("Search Team or Series:", "World Cup").strip().lower()
     
     matches = get_cricbuzz_matches()
     
     if matches:
-        # Filter logic
-        filtered = [m for m in matches if search_q in m['name'].lower() or search_q in m['series'].lower()] if search_q else matches
+        # Search filter
+        filtered = [m for m in matches if search_q in m['name'].lower() or search_q in m['series'].lower()]
         
-        # Split into sections
+        # Categorize
         upcoming = [m for m in filtered if m['state'] == 'Upcoming']
         live_done = [m for m in filtered if m['state'] != 'Upcoming']
 
-        # 1. UPCOMING
-        st.subheader("📅 Upcoming Matches")
-        for m in upcoming[:15]: # Show top 15
-            # Convert milliseconds to IST
+        # ⏳ SECTION 1: UPCOMING
+        st.subheader("📅 Upcoming Fixtures")
+        if not upcoming: st.info("No upcoming matches found for this search.")
+        for m in upcoming:
+            # Convert millisecond timestamp to IST
             dt_ist = datetime.fromtimestamp(m['timestamp']/1000, tz=timezone.utc) + timedelta(hours=5, minutes=30)
+            diff = dt_ist - (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30))
+            
             with st.container():
                 c1, c2, c3 = st.columns([2, 1, 1])
                 with c1:
@@ -91,35 +95,21 @@ with tab1:
                     st.caption(f"🏆 {m['series']}")
                     st.caption(f"🕒 {dt_ist.strftime('%d %b, %I:%M %p')} IST")
                 with c2:
-                    st.warning("⏳ Upcoming")
+                    if diff.total_seconds() > 0:
+                        h, rem = divmod(int(diff.total_seconds()), 3600)
+                        ml, _ = divmod(rem, 60)
+                        st.warning(f"⏳ {h}h {ml}m left")
+                    else: st.info("🚀 Starting Soon")
                 with c3:
                     st.write("Match ID:")
                     st.code(m['id'])
                 st.divider()
 
-        # 2. LIVE / COMPLETED
-        st.subheader("🏁 Live & Recent")
+        # 🏁 SECTION 2: LIVE & RECENT
+        st.subheader("🏁 Live & Recent Results")
         for m in live_done:
             with st.expander(f"{m['name']} - {m['status']}"):
-                st.write(f"Series: {m['series']}")
-                st.code(f"Match ID: {m['id']}")
+                st.write(f"**Series:** {m['series']}")
+                st.code(f"**Match ID:** {m['id']}")
     else:
-        st.warning("No matches found. Please ensure your RapidAPI Key is active.")
-
-# --- TAB 2: CREATE TEAM ---
-with tab2:
-    st.header("📝 Lock Your Team")
-    m_id = st.text_input("Paste Match ID here:")
-    if m_id:
-        st.info("Ensure you meet the squad rules (2 WK, 11 players total) before submitting!")
-        # Form logic continues as per previous versions...
-        with st.form("team_form"):
-            user = st.text_input("Your Name:")
-            # In a real app, you'd fetch the squad here using the match ID
-            st.write("Enter your 11 players (comma separated):")
-            players = st.text_area("Player List:")
-            cap = st.text_input("Captain:")
-            vc = st.text_input("Vice-Captain:")
-            if st.form_submit_button("Submit team"):
-                # Save to Google Sheets logic
-                st.success("Team saved to Google Sheets!")
+        st.error("No matches found. Ensure your new RapidAPI Key is active in your dashboard.")
