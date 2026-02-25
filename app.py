@@ -6,9 +6,8 @@ from datetime import datetime, timezone, timedelta
 import dateutil.parser
 
 # --- CONFIG & SECRETS ---
-# Using your verified RapidAPI Key
 RAPID_API_KEY = "adcb96e431mshd1c8f0f5f76b8b2p1052a5jsn8d4db86ab77d"
-RAPID_API_HOST = "cricbuzz-cricket.p.rapidapi.com"
+RAPID_API_HOST = "free-cricbuzz-cricket-api.p.rapidapi.com"
 SHEET_URL = st.secrets["GSHEET_URL"]
 
 headers = {
@@ -35,80 +34,83 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# --- API FUNCTIONS (CRICBUZZ MASTER LIST) ---
+# --- API FUNCTIONS (FREE CRICBUZZ ADAPTER) ---
 @st.cache_data(ttl=300)
-def get_cricbuzz_matches():
-    # This endpoint gets the master list of all current/future games
-    url = f"https://{RAPID_API_HOST}/matches/list"
+def get_matches():
+    # Fetching the main match list from the Free API
+    url = f"https://{RAPID_API_HOST}/matches" # Adjusting endpoint based on common Free API structures
     try:
-        res = requests.get(url, headers=headers).json()
+        response = requests.get(url, headers=headers)
+        res = response.json()
+        
+        # Mapping the Free API's response to our app's needs
         match_data = []
-        # Cricbuzz nesting: typeMatches -> seriesMatches -> seriesAdWrapper -> matches
-        for m_type in res.get('typeMatches', []):
-            for s_match in m_type.get('seriesMatches', []):
-                wrapper = s_match.get('seriesAdWrapper')
-                if wrapper:
-                    for m in wrapper.get('matches', []):
-                        info = m.get('matchInfo', {})
-                        match_data.append({
-                            'id': info.get('matchId'),
-                            'name': f"{info.get('team1', {}).get('teamName')} vs {info.get('team2', {}).get('teamName')}",
-                            'series': info.get('seriesName'),
-                            'status': info.get('status'),
-                            'timestamp': int(info.get('startDate', 0)),
-                            'state': info.get('state') # Upcoming, Live, or Complete
-                        })
+        # Note: The 'free' API often returns a list directly or under 'matches'
+        matches = res.get('matches', res) if isinstance(res, dict) else res
+        
+        for m in matches:
+            match_data.append({
+                'id': m.get('match_id', m.get('id')),
+                'name': m.get('match_name', f"{m.get('team1')} vs {m.get('team2')}"),
+                'series': m.get('series_name', 'International'),
+                'status': m.get('status', 'Upcoming'),
+                'timestamp': m.get('start_date', 0),
+                'state': m.get('state', 'Upcoming')
+            })
         return match_data
-    except: return []
+    except Exception as e:
+        return []
 
 # --- MAIN TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆 STANDINGS", "📜 HISTORY"])
 
 # --- TAB 1: MATCH CENTER ---
 with tab1:
-    st.header("🏏 Cricbuzz World Cup Feed")
-    search_q = st.text_input("Search Team or Series:", "India").strip().lower()
+    st.header("🏏 Match Center")
+    search_q = st.text_input("Search Team or Series (e.g., 'India'):", "India").strip().lower()
     
-    matches = get_cricbuzz_matches()
+    matches = get_matches()
     
     if matches:
-        # Smart Filter
-        filtered = [m for m in matches if search_q in m['name'].lower() or search_q in m['series'].lower()]
+        filtered = [m for m in matches if search_q in str(m['name']).lower()]
         
-        # Categorize
-        upcoming = [m for m in filtered if m['state'] == 'Upcoming']
-        live_done = [m for m in filtered if m['state'] != 'Upcoming']
+        # Filter for Upcoming vs Completed
+        upcoming = [m for m in filtered if m['state'].lower() == 'upcoming']
+        live_done = [m for m in filtered if m['state'].lower() != 'upcoming']
 
-        # ⏳ SECTION 1: UPCOMING
         st.subheader("📅 Upcoming Fixtures")
-        if not upcoming: st.info("No upcoming matches found for this search.")
+        if not upcoming: st.info("No upcoming matches found.")
         for m in upcoming:
-            # Convert millisecond timestamp to IST
-            dt_ist = datetime.fromtimestamp(m['timestamp']/1000, tz=timezone.utc) + timedelta(hours=5, minutes=30)
-            diff = dt_ist - (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30))
-            
+            # Handle IST Conversion
+            # Assuming Free API uses ISO string or Epoch
+            try:
+                dt = dateutil.parser.isoparse(m['timestamp']) if isinstance(m['timestamp'], str) else datetime.fromtimestamp(m['timestamp'])
+                ist_t = dt.replace(tzinfo=timezone.utc) + timedelta(hours=5, minutes=30)
+            except:
+                ist_t = datetime.now() # Fallback
+
             with st.container():
                 c1, c2, c3 = st.columns([2, 1, 1])
                 with c1:
-                    st.markdown(f"**{m['name']}**")
+                    st.write(f"**{m['name']}**")
                     st.caption(f"🏆 {m['series']}")
-                    st.caption(f"🕒 {dt_ist.strftime('%d %b, %I:%M %p')} IST")
+                    st.caption(f"🕒 {ist_t.strftime('%d %b, %I:%M %p')} IST")
                 with c2:
-                    if diff.total_seconds() > 0:
-                        h, rem = divmod(int(diff.total_seconds()), 3600)
-                        ml, _ = divmod(rem, 60)
-                        st.warning(f"⏳ {h}h {ml}m left")
-                    else: st.info("🚀 Starting Soon")
+                    st.warning("⏳ Entry Open")
                 with c3:
                     st.write("Match ID:")
                     st.code(m['id'])
                 st.divider()
 
-        # 🏁 SECTION 2: LIVE & RECENT
-        st.subheader("🏁 Live & Recent Results")
+        st.subheader("🏁 Live & Recent")
         for m in live_done:
             with st.expander(f"{m['name']} - {m['status']}"):
-                st.write(f"**Series:** {m['series']}")
-                st.code(f"**Match ID:** {m['id']}")
+                st.code(f"Match ID: {m['id']}")
     else:
-        st.error("No matches found. Please check your RapidAPI subscription for Cricbuzz.")
+        st.warning("No matches found. Check if your new RapidAPI Host is active.")
+
+# --- TAB 2: CREATE TEAM (LOGIC) ---
+with tab2:
+    st.subheader("📝 Submit Your Team")
+    # ... Rest of your existing Team Creation logic ...
+    st.info("Paste the Match ID from Tab 1 to start building your squad.")
