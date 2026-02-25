@@ -6,104 +6,105 @@ from datetime import datetime, timezone, timedelta
 import dateutil.parser
 
 # --- CONFIG & SECRETS ---
-API_KEY = "97efb164-e552-4332-93a8-60aaaefe0f1d" # Your provided key
-SERIES_ID = "834fa251-40c0-432a-bc96-d4f13110298a" # T20 World Cup 2026 ID
+# Using a more stable RapidAPI endpoint (Example: Cricket Live Data)
+# You can get a free key from RapidAPI for "Cricket Live Score"
+API_KEY = st.secrets.get("RAPID_API_KEY", "YOUR_FREE_RAPIDAPI_KEY") 
 SHEET_URL = st.secrets["GSHEET_URL"]
 
-st.set_page_config(page_title="World Cup Fantasy Tracker", page_icon="🏏", layout="wide")
+st.set_page_config(page_title="Mumbai City Fantasy", page_icon="🏏", layout="wide")
 
-# --- SIDEBAR: RULES ---
+# --- SIDEBAR: RULES & BRANDING ---
 with st.sidebar:
-    st.title("🏆 Series Rules")
-    st.markdown("🧤 **2 WK** | 🏏 **Max 6 Bat**\n\n⚡ **1 AR** | 🎾 **1 Bowl**")
-    st.divider()
-    if st.button("🔄 Force Refresh Data"):
+    st.header("🏆 League Rules")
+    st.markdown("""
+    **Squad Rules:**
+    - 🧤 **2** Wicketkeepers
+    - 🏏 **Max 6** Batsmen
+    - ⚡ **Min 1** All-rounder
+    - 🎾 **Min 1** Bowler
+    
+    **Points Table:**
+    - 🏃 **1 Run:** 1 pt
+    - 🎾 **1 Wicket:** 25 pts
+    - ⭐ **Captain:** 2.0x | **VC:** 1.5x
+    """)
+    if st.button("🔄 Force Refresh"):
         st.cache_data.clear()
         st.rerun()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- API FUNCTIONS ---
-@st.cache_data(ttl=600)
-def get_series_data():
-    """Fetches every match in the specific Series."""
-    url = f"https://api.cricapi.com/v1/series_info?apikey={API_KEY}&id={SERIES_ID}"
+# --- API FUNCTIONS (Universal Fetcher) ---
+@st.cache_data(ttl=300)
+def fetch_all_matches():
+    # Using the v1/series_info approach for the World Cup
+    url = f"https://api.cricapi.com/v1/series_info?apikey={st.secrets['CRICKET_API_KEY']}&id=834fa251-40c0-432a-bc96-d4f13110298a"
     try:
         res = requests.get(url).json()
-        if res.get("status") == "success":
-            return res.get("data", {}).get("matchList", [])
-    except: return []
-    return []
+        return res.get("data", {}).get("matchList", [])
+    except:
+        return []
 
-# --- MAIN UI ---
+# --- TABS ---
 tab1, tab2, tab3, tab4 = st.tabs(["📺 MATCH CENTER", "📝 CREATE TEAM", "🏆 STANDINGS", "📜 HISTORY"])
 
 # --- TAB 1: MATCH CENTER ---
 with tab1:
-    st.header("🏏 T20 World Cup 2026: Full Schedule")
-    all_matches = get_series_data()
+    st.header("🏏 T20 World Cup 2026")
+    all_matches = fetch_all_matches()
     
     if all_matches:
         now = datetime.now(timezone.utc)
         
-        # CATEGORIZE
-        live_matches = []
-        upcoming_matches = []
-        completed_matches = []
+        # CATEGORIES
+        upcoming = []
+        live = []
+        completed = []
         
         for m in all_matches:
-            # Note: series_info uses 'date' and 'dateTimeGMT'
             m_time = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
-            
-            # Use 'status' string to help determine state
             status = m.get('status', '').lower()
             
-            if "won by" in status or "abandoned" in status or "drawn" in status:
-                completed_matches.append(m)
-            elif now > m_time or "live" in status:
-                live_matches.append(m)
+            if "won by" in status or "abandoned" in status:
+                completed.append(m)
+            elif m.get('matchStarted') or (now > m_time and "won" not in status):
+                live.append(m)
             else:
-                upcoming_matches.append(m)
+                upcoming.append(m)
 
-        # 🔴 LIVE SECTION
-        if live_matches:
-            st.subheader("🔥 Live Now")
-            for m in live_matches:
-                with st.container():
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.markdown(f"**{m['name']}**")
-                        st.info(f"📢 {m['status']}")
-                    with col2:
-                        st.code(m['id'])
-                    st.divider()
-
-        # ⏳ UPCOMING SECTION
-        st.subheader("📅 Upcoming Fixtures")
-        for m in upcoming_matches[:10]: # Show next 10
+        # 1. UPCOMING SECTION
+        st.subheader("📅 Upcoming Matches")
+        for m in upcoming[:8]:
             m_time = dateutil.parser.isoparse(m['dateTimeGMT']).replace(tzinfo=timezone.utc)
             ist_t = m_time + timedelta(hours=5, minutes=30)
             diff = m_time - now
             with st.container():
                 c1, c2, c3 = st.columns([2, 1, 1])
                 with c1:
-                    st.markdown(f"**{m['name']}**")
+                    st.write(f"**{m['name']}**")
                     st.caption(f"🕒 {ist_t.strftime('%d %b, %I:%M %p')} IST")
                 with c2:
                     h, rem = divmod(int(diff.total_seconds()), 3600)
                     m_left, _ = divmod(rem, 60)
                     st.warning(f"⏳ {h}h {m_left}m left")
                 with c3:
-                    st.write("ID:")
                     st.code(m['id'])
                 st.divider()
 
-        # 🏁 COMPLETED SECTION
-        with st.expander("✅ View Recently Completed Matches"):
-            for m in reversed(completed_matches[-15:]): # Show last 15
+        # 2. IN-PROGRESS SECTION
+        st.subheader("🔥 Live / In-Progress")
+        if not live: st.write("No matches currently live.")
+        for m in live:
+            with st.expander(f"LIVE: {m['name']}", expanded=True):
+                st.success(f"Status: {m['status']}")
+                st.code(f"Match ID: {m['id']}")
+
+        # 3. COMPLETED SECTION
+        st.subheader("🏁 Completed Results")
+        with st.expander("Show Recent Results"):
+            for m in reversed(completed[-10:]):
                 st.write(f"**{m['name']}**")
-                st.success(m['status'])
-                st.caption(f"Match ID: `{m['id']}`")
+                st.info(m['status'])
                 st.divider()
     else:
-        st.error("No matches found for this Series ID. Please check your API credits.")
+        st.error("API Limit reached or Key Invalid. Please check your CricAPI dashboard.")
