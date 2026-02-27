@@ -109,12 +109,7 @@ tab1, tab2, tab3 = st.tabs(["🔎 Search Matches", "📝 Create Team", "🏆 Lea
 
 with tab1:
     st.header("Search Series or Matches")
-if st.button("🧪 Debug API Response"):
-    data = safe_api("matches", {
-        "apikey": CRICAPI_KEY,
-        "offset": 0
-    })
-    st.write(data)
+
     if st.button("🔄 Admin Refresh Matches", key="refresh_matches"):
         fetch_and_cache_matches()
         st.success("Matches Updated")
@@ -132,7 +127,12 @@ if st.button("🧪 Debug API Response"):
             matches_df["name"].astype(str).str.contains(search, case=False, na=False)
         ]
         st.dataframe(filtered, use_container_width=True)
-
+if st.button("🧪 Debug API Response"):
+    data = safe_api("matches", {
+        "apikey": CRICAPI_KEY,
+        "offset": 0
+    })
+    st.write(data)
 # ================= TAB 2 =================
 
 with tab2:
