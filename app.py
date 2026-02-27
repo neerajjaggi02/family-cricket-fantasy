@@ -149,7 +149,13 @@ with tab1:
     if not series_list:
         st.warning("No active ICC T20 series found.")
     else:
-        series = st.selectbox("Select Series", series_list, format_func=lambda x: x["name"])
+        series = st.selectbox(
+            "Select Series",
+            series_list,
+            format_func=lambda x: x["name"],
+            key="series_select"
+        )
+
         matches = get_series_matches(series["id"])
 
         for m in matches:
@@ -163,8 +169,8 @@ with tab1:
 with tab2:
     st.header("Create Team & Join Contest")
 
-    username = st.text_input("Username")
-    match_id = st.text_input("Match ID")
+    username = st.text_input("Username", key="username_input")
+    match_id = st.text_input("Match ID", key="create_match_id")
 
     contests_df = load_sheet("contests", ["contest_id","match_id","contest_name"])
     teams_df = load_sheet("teams", ["user_id","match_id","contest_id","players","captain","vice_captain"])
@@ -178,12 +184,23 @@ with tab2:
 
             player_map = {p["name"]: p["id"] for p in players}
 
-            st.subheader("Players")
+            selected = st.multiselect(
+                "Select 11 Players",
+                list(player_map.keys()),
+                key="player_multiselect"
+            )
 
-            selected = st.multiselect("Select 11 Players", list(player_map.keys()))
+            captain = st.selectbox(
+                "Captain",
+                selected,
+                key="captain_select"
+            )
 
-            captain = st.selectbox("Captain", selected)
-            vice = st.selectbox("Vice Captain", selected)
+            vice = st.selectbox(
+                "Vice Captain",
+                selected,
+                key="vice_select"
+            )
 
             st.subheader("Playing XI Status")
 
@@ -199,9 +216,9 @@ with tab2:
             if match_started:
                 st.error("Match already started. Joining locked.")
             else:
-                contest_name = st.text_input("Contest Name")
+                contest_name = st.text_input("Contest Name", key="contest_name_input")
 
-                if st.button("Create / Join Contest"):
+                if st.button("Create / Join Contest", key="join_contest_btn"):
                     if len(selected) != 11:
                         st.error("Select exactly 11 players.")
                     else:
@@ -235,11 +252,12 @@ with tab2:
 with tab3:
     st.header("Contest Leaderboard")
 
-    match_id_lb = st.text_input("Match ID")
-    contest_id_lb = st.text_input("Contest ID")
+    match_id_lb = st.text_input("Match ID", key="leaderboard_match_id")
+    contest_id_lb = st.text_input("Contest ID", key="leaderboard_contest_id")
 
-    if st.button("Generate Leaderboard"):
+    if st.button("Generate Leaderboard", key="leaderboard_btn"):
         teams_df = load_sheet("teams", [])
+
         filtered = teams_df[
             (teams_df["match_id"] == match_id_lb) &
             (teams_df["contest_id"] == contest_id_lb)
