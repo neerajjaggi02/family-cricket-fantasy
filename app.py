@@ -11,256 +11,248 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Fantasy Cricket Pro", layout="wide")
 
 CRICAPI_KEY = st.secrets["CRICAPI_KEY"]
+RAPID_API_KEY = st.secrets["RAPID_API_KEY"]
 GSHEET_URL = st.secrets["GSHEET_URL"]
-BASE_URL = "https://api.cricapi.com/v1"
+
+CRIC_BASE = "https://api.cricapi.com/v1"
+RAPID_HOST = "cricket-api-free-data.p.rapidapi.com"
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# ================= SAFE API =================
+# ================= HELPERS =================
 
-def safe_api(endpoint, params):
+def safe_api(url, headers=None, params=None):
     try:
-        res = requests.get(f"{BASE_URL}/{endpoint}", params=params, timeout=10)
+        res = requests.get(url, headers=headers, params=params, timeout=10)
         if res.status_code != 200:
             return {}
         return res.json()
     except Exception:
         return {}
 
-# ================= SHEET HELPERS =================
-
-def load_sheet(name, columns=None):
+def load_sheet(name):
     try:
         df = conn.read(spreadsheet=GSHEET_URL, worksheet=name)
-        if df is None:
-            return pd.DataFrame(columns=columns) if columns else pd.DataFrame()
-        return df
+        return df if df is not None else pd.DataFrame()
     except Exception:
-        return pd.DataFrame(columns=columns) if columns else pd.DataFrame()
+        return pd.DataFrame()
 
 def save_sheet(name, df):
-    try:
-        conn.update(spreadsheet=GSHEET_URL, worksheet=name, data=df)
-    except Exception as e:
-        st.error(f"Sheet write error: {e}")
+    conn.update(spreadsheet=GSHEET_URL, worksheet=name, data=df)
 
-# ================= ADMIN CACHE =================
+# ================= MATCH CACHE =================
 
-def fetch_and_cache_matches():
-    data = safe_api("matches", {"apikey": CRICAPI_KEY, "offset": 0})
+def fetch_matches():
 
-    if data.get("status") != "success":
-        st.error("API failed while fetching matches.")
-        return
-
-    matches = data.get("data", [])
-
-    if not matches:
-        st.warning("No matches returned from API.")
-        return
-
-    df = pd.DataFrame([
-        {
-            "match_id": m.get("id"),
-            "series_id": m.get("series_id"),
-            "name": m.get("name"),
-            "status": m.get("status"),
-            "matchStarted": m.get("matchStarted"),
-            "matchEnded": m.get("matchEnded"),
-            "date": m.get("date"),
-            "last_updated": datetime.utcnow(),
-        }
-        for m in matches
-    ])
-
-    save_sheet("matches_cache", df)
-    st.success(f"{len(df)} matches cached successfully.")
-
-def fetch_and_cache_squad(match_id):
-    data = safe_api("match_squad", {"apikey": CRICAPI_KEY, "id": match_id})
+    url = f"{CRIC_BASE}/matches"
+    data = safe_api(url, params={"apikey": CRICAPI_KEY, "offset": 0})
 
     if data.get("status") != "success":
-        st.error("API failed while fetching squad.")
-        return
-
-    squad_data = data.get("data")
-    if not squad_data:
-        st.error("No squad data returned.")
-        return
-
-    squad_list = squad_data.get("squad", [])
-    if not squad_list:
-        st.warning("Squad not available for this match.")
+        st.error("Failed to fetch matches.")
         return
 
     rows = []
-    for team in squad_list:
-        team_name = team.get("team")
-        players = team.get("players", [])
-        for player in players:
-            rows.append({
-                "match_id": match_id,
-                "team": team_name,
-                "player_id": player.get("id"),
-                "player_name": player.get("name"),
-                "playing11": False,
-            })
+
+    for m in data.get("data", []):
+        team_info = m.get("teamInfo", [])
+
+        if len(team_info) >= 2:
+            team1_id = team_info[0].get("id")
+            team2_id = team_info[1].get("id")
+        else:
+            continue
+
+        rows.append({
+            "match_id": m.get("id"),
+            "name": m.get("name"),
+            "status": m.get("status"),
+            "team1_id": team1_id,
+            "team2_id": team2_id,
+            "locked": False,
+            "last_updated": datetime.utcnow()
+        })
 
     df = pd.DataFrame(rows)
-    save_sheet("squad_cache", df)
-    st.success("Squad cached successfully.")
+    save_sheet("matches_cache", df)
+    st.success("Matches cached.")
+
+# ================= SQUAD FETCH (RAPIDAPI) =================
+
+def fetch_team_players(team_id):
+
+    url = f"https://{RAPID_HOST}/cricket-players"
+
+    headers = {
+        "x-rapidapi-key": RAPID_API_KEY,
+        "x-rapidapi-host": RAPID_HOST
+    }
+
+    data = safe_api(url, headers=headers, params={"teamid": team_id})
+    return data.get("data", [])
+
+def fetch_match_squad(match_row):
+
+    players_all = []
+
+    for team_id in [match_row["team1_id"], match_row["team2_id"]]:
+
+        players = fetch_team_players(team_id)
+
+        for p in players:
+            players_all.append({
+                "match_id": match_row["match_id"],
+                "team_id": team_id,
+                "player_id": p.get("id"),
+                "player_name": p.get("name"),
+                "playing11": False
+            })
+
+    if players_all:
+        df = pd.DataFrame(players_all)
+        save_sheet("squad_cache", df)
+        st.success("Squad cached from RapidAPI.")
+    else:
+        st.warning("No players returned.")
 
 # ================= UI =================
 
 tab1, tab2, tab3 = st.tabs(
-    ["🔎 Search Matches", "📝 Create Team", "🏆 Leaderboard"]
+    ["🔎 Search Matches", "🛠 Admin Panel", "📝 Create Team"]
 )
 
 # ================= TAB 1 =================
 
 with tab1:
-    st.header("Search Series or Matches")
 
-    if st.button("🔄 Admin Refresh Matches"):
-        fetch_and_cache_matches()
+    if st.button("🔄 Refresh Matches"):
+        fetch_matches()
 
     matches_df = load_sheet("matches_cache")
 
-    search = st.text_input("Search by Country, Team or Series")
+    search = st.text_input("Search Match")
 
     if not matches_df.empty:
-        matches_df["search_blob"] = (
-            matches_df["name"].astype(str) + " " +
-            matches_df["status"].astype(str)
-        )
 
         if search:
             filtered = matches_df[
-                matches_df["search_blob"]
-                .str.contains(search, case=False, na=False)
+                matches_df["name"].str.contains(search, case=False, na=False)
             ]
         else:
             filtered = matches_df
 
         if not filtered.empty:
-            selected_match = st.selectbox(
-                "Select Match",
-                filtered["name"].tolist()
-            )
 
-            match_id = filtered[
-                filtered["name"] == selected_match
-            ]["match_id"].values[0]
+            selected = st.selectbox("Select Match", filtered["name"])
 
-            st.session_state["selected_match_id"] = match_id
-            st.success("Match Selected")
-        else:
-            st.warning("No matches found.")
-    else:
-        st.warning("No matches cached. Click Admin Refresh.")
+            match_row = filtered[filtered["name"] == selected].iloc[0]
 
-# ================= TAB 2 =================
+            st.session_state["selected_match"] = match_row
+
+            st.success("Match selected.")
+
+# ================= TAB 2 (ADMIN) =================
 
 with tab2:
-    st.header("Create Team")
 
-    username = st.text_input("Username")
+    st.subheader("Admin Controls")
 
-    match_id = st.session_state.get("selected_match_id")
+    match_row = st.session_state.get("selected_match")
 
-    if not match_id:
-        st.warning("Select a match from Search tab first.")
+    if match_row is None:
+        st.warning("Select match first.")
     else:
 
-        if st.button("🔄 Fetch Squad (Admin)"):
-            fetch_and_cache_squad(match_id)
+        if st.button("Fetch Squad from RapidAPI"):
+            fetch_match_squad(match_row)
 
         squad_df = load_sheet("squad_cache")
 
-        match_squad = squad_df[squad_df["match_id"] == match_id]
+        match_squad = squad_df[
+            squad_df["match_id"] == match_row["match_id"]
+        ]
 
         if not match_squad.empty:
 
-            player_map = dict(
-                zip(match_squad["player_name"], match_squad["player_id"])
-            )
+            st.write("Set Playing XI")
 
-            selected = st.multiselect(
-                "Select 11 Players",
-                list(player_map.keys())
-            )
+            for i, row in match_squad.iterrows():
+                is_playing = st.checkbox(
+                    row["player_name"],
+                    value=row["playing11"],
+                    key=f"xi_{i}"
+                )
+                squad_df.at[i, "playing11"] = is_playing
 
-            captain = st.selectbox("Captain", selected)
-            vice = st.selectbox("Vice Captain", selected)
+            if st.button("Save Playing XI"):
+                save_sheet("squad_cache", squad_df)
+                st.success("Playing XI updated.")
 
-            st.subheader("Playing XI")
-            for _, row in match_squad.iterrows():
-                if row["playing11"]:
-                    st.write(f"🟢 {row['player_name']}")
-                else:
-                    st.write(f"🔴 {row['player_name']}")
+        matches_df = load_sheet("matches_cache")
 
-            matches_df = load_sheet("matches_cache")
-            started = matches_df[
-                matches_df["match_id"] == match_id
-            ]["matchStarted"].values
+        if st.button("Toggle Lock Match"):
+            current_lock = match_row["locked"]
+            matches_df.loc[
+                matches_df["match_id"] == match_row["match_id"],
+                "locked"
+            ] = not current_lock
 
-            if len(started) > 0 and started[0]:
-                st.error("Match already started. Team locked.")
-            else:
-                if st.button("Save Team"):
-                    if len(selected) != 11:
-                        st.error("Select exactly 11 players.")
-                    else:
-                        teams_df = load_sheet("teams")
-
-                        new_row = pd.DataFrame([{
-                            "user_id": username,
-                            "match_id": match_id,
-                            "contest_id": "default",
-                            "players": ",".join(
-                                [player_map[p] for p in selected]
-                            ),
-                            "captain": player_map[captain],
-                            "vice_captain": player_map[vice],
-                        }])
-
-                        teams_df = pd.concat(
-                            [teams_df, new_row],
-                            ignore_index=True
-                        )
-                        save_sheet("teams", teams_df)
-
-                        st.success("Team Saved")
-        else:
-            st.warning("No squad cached. Ask admin to fetch squad.")
+            save_sheet("matches_cache", matches_df)
+            st.success("Match lock toggled.")
 
 # ================= TAB 3 =================
 
 with tab3:
-    st.header("Leaderboard")
 
-    match_id_lb = st.text_input("Match ID")
+    st.subheader("Create Fantasy Team")
 
-    if st.button("Generate Leaderboard"):
-        teams_df = load_sheet("teams")
+    username = st.text_input("Username")
 
-        filtered = teams_df[teams_df["match_id"] == match_id_lb]
+    match_row = st.session_state.get("selected_match")
 
-        if filtered.empty:
-            st.warning("No teams found.")
+    if match_row is None:
+        st.warning("Select match first.")
+    else:
+
+        matches_df = load_sheet("matches_cache")
+
+        locked = matches_df[
+            matches_df["match_id"] == match_row["match_id"]
+        ]["locked"].values[0]
+
+        if locked:
+            st.error("Match locked. Cannot join.")
         else:
-            leaderboard = []
 
-            for _, row in filtered.iterrows():
-                player_count = len(row["players"].split(","))
-                leaderboard.append({
-                    "User": row["user_id"],
-                    "Points": player_count * 10
-                })
+            squad_df = load_sheet("squad_cache")
 
-            lb = pd.DataFrame(leaderboard).sort_values(
-                by="Points", ascending=False
-            )
+            match_squad = squad_df[
+                squad_df["match_id"] == match_row["match_id"]
+            ]
 
-            st.dataframe(lb, use_container_width=True)
+            if match_squad.empty:
+                st.warning("Squad not available.")
+            else:
+
+                player_list = match_squad["player_name"].tolist()
+
+                selected = st.multiselect("Select 11 Players", player_list)
+
+                if st.button("Save Team"):
+
+                    if len(selected) != 11:
+                        st.error("Select exactly 11 players.")
+                    else:
+
+                        teams_df = load_sheet("teams")
+
+                        new_row = pd.DataFrame([{
+                            "user": username,
+                            "match_id": match_row["match_id"],
+                            "players": ",".join(selected)
+                        }])
+
+                        teams_df = pd.concat([teams_df, new_row], ignore_index=True)
+
+                        save_sheet("teams", teams_df)
+
+                        st.success("Team saved.")
