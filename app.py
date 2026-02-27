@@ -23,10 +23,7 @@ def safe_api(endpoint, params):
         res = requests.get(f"{BASE_URL}/{endpoint}", params=params, timeout=10)
         if res.status_code != 200:
             return {}
-        try:
-            return res.json()
-        except Exception:
-            return {}
+        return res.json()
     except Exception:
         return {}
 
@@ -34,33 +31,24 @@ def safe_api(endpoint, params):
 
 def load_sheet(name, columns=None):
     try:
-        df = conn.read(
-            spreadsheet=GSHEET_URL,
-            worksheet=name
-        )
+        df = conn.read(spreadsheet=GSHEET_URL, worksheet=name)
         if df is None:
             return pd.DataFrame(columns=columns) if columns else pd.DataFrame()
         return df
     except Exception:
         return pd.DataFrame(columns=columns) if columns else pd.DataFrame()
 
+
 def save_sheet(name, df):
     try:
-        conn.update(
-            spreadsheet=GSHEET_URL,
-            worksheet=name,
-            data=df
-        )
+        conn.update(spreadsheet=GSHEET_URL, worksheet=name, data=df)
     except Exception as e:
         st.error(f"Sheet write error: {e}")
 
 # ================= ADMIN CACHE =================
 
 def fetch_and_cache_matches():
-    data = safe_api("matches", {
-        "apikey": CRICAPI_KEY,
-        "offset": 0
-    })
+    data = safe_api("matches", {"apikey": CRICAPI_KEY, "offset": 0})
 
     if data.get("status") != "success":
         st.error("API failed while fetching matches.")
@@ -72,26 +60,28 @@ def fetch_and_cache_matches():
         st.warning("No matches returned from API.")
         return
 
-    df = pd.DataFrame([{
-        "match_id": m.get("id"),
-        "series_id": m.get("series_id"),
-        "name": m.get("name"),
-        "status": m.get("status"),
-        "matchStarted": m.get("matchStarted"),
-        "matchEnded": m.get("matchEnded"),
-        "date": m.get("date"),
-        "last_updated": datetime.utcnow()
-    } for m in matches])
+    df = pd.DataFrame(
+        [
+            {
+                "match_id": m.get("id"),
+                "series_id": m.get("series_id"),
+                "name": m.get("name"),
+                "status": m.get("status"),
+                "matchStarted": m.get("matchStarted"),
+                "matchEnded": m.get("matchEnded"),
+                "date": m.get("date"),
+                "last_updated": datetime.utcnow(),
+            }
+            for m in matches
+        ]
+    )
 
     save_sheet("matches_cache", df)
-
     st.success(f"{len(df)} matches cached successfully.")
 
+
 def fetch_and_cache_squad(match_id):
-    data = safe_api("match_squad", {
-        "apikey": CRICAPI_KEY,
-        "id": match_id
-    })
+    data = safe_api("match_squad", {"apikey": CRICAPI_KEY, "id": match_id})
 
     if data.get("status") != "success":
         st.error("API failed while fetching squad.")
@@ -101,18 +91,25 @@ def fetch_and_cache_squad(match_id):
     players = squad.get("players", [])
     playing_xi = squad.get("playing11", [])
 
-    df = pd.DataFrame([{
-        "match_id": match_id,
-        "player_id": p.get("id"),
-        "player_name": p.get("name"),
-        "playing11": p.get("name") in playing_xi
-    } for p in players])
+    df = pd.DataFrame(
+        [
+            {
+                "match_id": match_id,
+                "player_id": p.get("id"),
+                "player_name": p.get("name"),
+                "playing11": p.get("name") in playing_xi,
+            }
+            for p in players
+        ]
+    )
 
     save_sheet("squad_cache", df)
 
 # ================= UI =================
 
-tab1, tab2, tab3 = st.tabs(["🔎 Search Matches", "📝 Create Team", "🏆 Leaderboard"])
+tab1, tab2, tab3 = st.tabs(
+    ["🔎 Search Matches", "📝 Create Team", "🏆 Leaderboard"]
+)
 
 # ================= TAB 1 =================
 
@@ -121,34 +118,45 @@ with tab1:
 
     if st.button("🔄 Admin Refresh Matches", key="refresh_matches"):
         fetch_and_cache_matches()
-        st.success("Matches Updated")
 
-   matches_df = load_sheet(
-    "matches_cache",
-    ["match_id","series_id","name","status","matchStarted","matchEnded","date","last_updated"]
-)
+    matches_df = load_sheet(
+        "matches_cache",
+        [
+            "match_id",
+            "series_id",
+            "name",
+            "status",
+            "matchStarted",
+            "matchEnded",
+            "date",
+            "last_updated",
+        ],
+    )
 
-search = st.text_input("Search by Match Name or Status", key="search_box")
+    search = st.text_input("Search by Match Name or Status", key="search_box")
 
-if not matches_df.empty:
+    if not matches_df.empty:
+        if search:
+            filtered = matches_df[
+                matches_df["name"]
+                .astype(str)
+                .str.contains(search, case=False, na=False)
+                |
+                matches_df["status"]
+                .astype(str)
+                .str.contains(search, case=False, na=False)
+            ]
+        else:
+            filtered = matches_df
 
-    if search:
-        filtered = matches_df[
-            matches_df["name"].astype(str).str.contains(search, case=False, na=False) |
-            matches_df["status"].astype(str).str.contains(search, case=False, na=False)
-        ]
+        st.dataframe(filtered, use_container_width=True)
     else:
-        filtered = matches_df
+        st.warning("No matches cached. Click Admin Refresh.")
 
-    st.dataframe(filtered, use_container_width=True)
-else:
-    st.warning("No matches cached. Click Admin Refresh.")
-if st.button("🧪 Debug API Response"):
-    data = safe_api("matches", {
-        "apikey": CRICAPI_KEY,
-        "offset": 0
-    })
-    st.write(data)
+    if st.button("🧪 Debug API Response", key="debug_api"):
+        debug_data = safe_api("matches", {"apikey": CRICAPI_KEY, "offset": 0})
+        st.write(debug_data)
+
 # ================= TAB 2 =================
 
 with tab2:
@@ -165,22 +173,21 @@ with tab2:
 
         squad_df = load_sheet(
             "squad_cache",
-            ["match_id","player_id","player_name","playing11"]
+            ["match_id", "player_id", "player_name", "playing11"],
         )
 
         match_squad = squad_df[squad_df["match_id"] == match_id]
 
         if not match_squad.empty:
 
-            player_map = dict(zip(
-                match_squad["player_name"],
-                match_squad["player_id"]
-            ))
+            player_map = dict(
+                zip(match_squad["player_name"], match_squad["player_id"])
+            )
 
             selected = st.multiselect(
                 "Select 11 Players",
                 list(player_map.keys()),
-                key="player_select"
+                key="player_select",
             )
 
             captain = st.selectbox("Captain", selected, key="captain_select")
@@ -199,7 +206,7 @@ with tab2:
                 matches_df["match_id"] == match_id
             ]["matchStarted"].values
 
-            if len(started) > 0 and started[0] == True:
+            if len(started) > 0 and started[0] is True:
                 st.error("Match already started. Team locked.")
             else:
                 if st.button("Save Team", key="save_team"):
@@ -208,23 +215,37 @@ with tab2:
                     else:
                         teams_df = load_sheet(
                             "teams",
-                            ["user_id","match_id","contest_id","players","captain","vice_captain"]
+                            [
+                                "user_id",
+                                "match_id",
+                                "contest_id",
+                                "players",
+                                "captain",
+                                "vice_captain",
+                            ],
                         )
 
-                        new_row = pd.DataFrame([{
-                            "user_id": username,
-                            "match_id": match_id,
-                            "contest_id": "default",
-                            "players": ",".join([player_map[p] for p in selected]),
-                            "captain": player_map[captain],
-                            "vice_captain": player_map[vice]
-                        }])
+                        new_row = pd.DataFrame(
+                            [
+                                {
+                                    "user_id": username,
+                                    "match_id": match_id,
+                                    "contest_id": "default",
+                                    "players": ",".join(
+                                        [player_map[p] for p in selected]
+                                    ),
+                                    "captain": player_map[captain],
+                                    "vice_captain": player_map[vice],
+                                }
+                            ]
+                        )
 
-                        teams_df = pd.concat([teams_df, new_row], ignore_index=True)
+                        teams_df = pd.concat(
+                            [teams_df, new_row], ignore_index=True
+                        )
                         save_sheet("teams", teams_df)
 
                         st.success("Team Saved")
-
         else:
             st.warning("No squad cached. Ask admin to fetch squad.")
 
@@ -247,10 +268,11 @@ with tab3:
 
             for _, row in filtered.iterrows():
                 player_count = len(row["players"].split(","))
-                leaderboard.append({
-                    "User": row["user_id"],
-                    "Points": player_count * 10  # demo logic
-                })
+                leaderboard.append(
+                    {"User": row["user_id"], "Points": player_count * 10}
+                )
 
-            lb = pd.DataFrame(leaderboard).sort_values(by="Points", ascending=False)
+            lb = pd.DataFrame(leaderboard).sort_values(
+                by="Points", ascending=False
+            )
             st.dataframe(lb, use_container_width=True)
