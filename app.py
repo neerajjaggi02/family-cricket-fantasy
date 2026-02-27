@@ -10,7 +10,11 @@ st.set_page_config(page_title="Fantasy League Pro", layout="wide")
 
 CRICAPI_KEY = st.secrets["CRICAPI_KEY"]
 BASE_URL = "https://api.cricapi.com/v1"
-conn = st.connection("gsheets", type=GSheetsConnection)
+conn = st.connection(
+    "gsheets",
+    type=GSheetsConnection,
+    spreadsheet=st.secrets["GSHEET_URL"]
+)
 
 # ================= SAFE API =================
 
