@@ -57,7 +57,7 @@ def save_sheet(name, df):
 # ================= ADMIN CACHE =================
 
 def fetch_and_cache_matches():
-    data = safe_api("currentMatches", {
+    data = safe_api("matches", {
         "apikey": CRICAPI_KEY,
         "offset": 0
     })
@@ -110,7 +110,7 @@ tab1, tab2, tab3 = st.tabs(["🔎 Search Matches", "📝 Create Team", "🏆 Lea
 with tab1:
     st.header("Search Series or Matches")
 if st.button("🧪 Debug API Response"):
-    data = safe_api("currentMatches", {
+    data = safe_api("matches", {
         "apikey": CRICAPI_KEY,
         "offset": 0
     })
