@@ -3,117 +3,107 @@
 import streamlit as st
 import requests
 import pandas as pd
+from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # ================= CONFIG =================
 
-st.set_page_config(page_title="Fantasy Cricket Pro", layout="wide")
+st.set_page_config(page_title="ICC Fantasy League", layout="wide")
 
 CRICAPI_KEY = st.secrets["CRICAPI_KEY"]
 BASE_URL = "https://api.cricapi.com/v1"
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# ================= API FUNCTIONS =================
+# ================= API HELPERS =================
+
+@st.cache_data(ttl=300)
+def get_series_list():
+    url = f"{BASE_URL}/series"
+    params = {"apikey": CRICAPI_KEY, "offset": 0}
+    res = requests.get(url, params=params).json()
+    if res.get("status") == "success":
+        return res.get("data", [])
+    return []
+
+
+@st.cache_data(ttl=300)
+def get_series_matches(series_id):
+    url = f"{BASE_URL}/seriesMatches"
+    params = {"apikey": CRICAPI_KEY, "id": series_id}
+    res = requests.get(url, params=params).json()
+    if res.get("status") == "success":
+        return res.get("data", {}).get("matchList", [])
+    return []
+
+
+@st.cache_data(ttl=120)
+def get_match_squad(match_id):
+    url = f"{BASE_URL}/match_squad"
+    params = {"apikey": CRICAPI_KEY, "id": match_id}
+    res = requests.get(url, params=params).json()
+    if res.get("status") == "success":
+        return res.get("data", {})
+    return {}
+
 
 @st.cache_data(ttl=60)
-def get_all_matches():
-    url = f"{BASE_URL}/currentMatches"
-    params = {
-        "apikey": CRICAPI_KEY,
-        "offset": 0
-    }
-
-    try:
-        res = requests.get(url, params=params)
-        data = res.json()
-
-        if data.get("status") != "success":
-            return []
-
-        return data.get("data", [])
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=30)
 def get_scorecard(match_id):
     url = f"{BASE_URL}/match_scorecard"
-    params = {
-        "apikey": CRICAPI_KEY,
-        "id": match_id
-    }
+    params = {"apikey": CRICAPI_KEY, "id": match_id}
+    res = requests.get(url, params=params).json()
+    if res.get("status") == "success":
+        return res.get("data", {})
+    return {}
 
+# ================= GOOGLE SHEETS =================
+
+def load_teams():
     try:
-        res = requests.get(url, params=params)
-        data = res.json()
+        return conn.read(worksheet="teams")
+    except:
+        return pd.DataFrame(columns=["user_id","match_id","players","captain","vice_captain"])
 
-        if data.get("status") != "success":
-            return {}
 
-        return data.get("data", {})
-    except Exception:
-        return {}
+def save_teams(df):
+    conn.update(worksheet="teams", data=df)
 
 # ================= FANTASY ENGINE =================
 
-def calculate_points(player_stats):
+def calculate_points(player):
     points = 0
-
-    runs = int(player_stats.get("runs", 0))
-    wickets = int(player_stats.get("wickets", 0))
-    catches = int(player_stats.get("catches", 0))
-    fours = int(player_stats.get("fours", 0))
-    sixes = int(player_stats.get("sixes", 0))
-
-    points += runs * 1
-    points += wickets * 25
-    points += catches * 8
-    points += fours * 1
-    points += sixes * 2
-
+    points += int(player.get("runs", 0)) * 1
+    points += int(player.get("wickets", 0)) * 25
+    points += int(player.get("catches", 0)) * 8
     return points
 
 
-def extract_player_stats(scorecard):
-    player_map = {}
-
-    try:
-        innings = scorecard.get("scorecard", [])
-
-        for inning in innings:
-            for batter in inning.get("batting", []):
-                player_map[batter.get("id")] = {
-                    "runs": batter.get("runs", 0),
-                    "fours": batter.get("fours", 0),
-                    "sixes": batter.get("sixes", 0),
-                    "wickets": 0,
-                    "catches": 0
-                }
-
-            for bowler in inning.get("bowling", []):
-                pid = bowler.get("id")
-                if pid not in player_map:
-                    player_map[pid] = {}
-
-                player_map[pid]["wickets"] = bowler.get("wickets", 0)
-
-    except Exception:
-        pass
-
-    return player_map
+def extract_stats(scorecard):
+    stats = {}
+    for inning in scorecard.get("scorecard", []):
+        for batter in inning.get("batting", []):
+            stats[batter["id"]] = {
+                "runs": batter.get("runs", 0),
+                "wickets": 0,
+                "catches": 0
+            }
+        for bowler in inning.get("bowling", []):
+            pid = bowler["id"]
+            if pid not in stats:
+                stats[pid] = {}
+            stats[pid]["wickets"] = bowler.get("wickets", 0)
+    return stats
 
 
-def calculate_team_points(team_row, player_stats):
+def calculate_team_points(team_row, stats):
     total = 0
-
     players = team_row["players"].split(",")
     captain = team_row["captain"]
     vice = team_row["vice_captain"]
 
     for pid in players:
-        stats = player_stats.get(pid.strip(), {})
-        pts = calculate_points(stats)
+        pstat = stats.get(pid.strip(), {})
+        pts = calculate_points(pstat)
 
         if pid.strip() == captain:
             pts *= 2
@@ -124,108 +114,104 @@ def calculate_team_points(team_row, player_stats):
 
     return total
 
-# ================= GOOGLE SHEET HELPERS =================
-
-def load_teams():
-    try:
-        return conn.read(worksheet="teams")
-    except Exception:
-        return pd.DataFrame(columns=[
-            "user_id", "match_id", "players", "captain", "vice_captain"
-        ])
-
-
-def save_teams(df):
-    conn.update(worksheet="teams", data=df)
-
 # ================= UI =================
 
-tab1, tab2, tab3 = st.tabs(["📺 Matches", "📝 Create Team", "🏆 Leaderboard"])
+tab1, tab2, tab3 = st.tabs(["🏏 ICC T20 WC", "📝 Create Team", "🏆 Leaderboard"])
 
-# ================= MATCHES =================
+# ================= TAB 1 =================
 
 with tab1:
-    st.header("🏏 Live & Upcoming Matches")
+    st.header("Select ICC T20 World Cup")
 
-    matches = get_all_matches()
+    series_list = get_series_list()
+    icc_series = [s for s in series_list if "ICC" in s.get("name","") and "T20" in s.get("name","")]
 
-    if not matches:
-        st.warning("No matches found or API limit reached.")
+    if not icc_series:
+        st.warning("ICC T20 series not found in free API tier.")
+    else:
+        series = st.selectbox("Choose Series", icc_series, format_func=lambda x: x["name"])
+        matches = get_series_matches(series["id"])
 
-    live = [m for m in matches if m.get("matchStarted") and not m.get("matchEnded")]
-    upcoming = [m for m in matches if not m.get("matchStarted")]
+        for m in matches:
+            st.write(f"🏏 {m.get('name')}")
+            st.caption(f"Match ID: {m.get('id')}")
+            st.caption(f"Started: {m.get('matchStarted')}")
+            st.divider()
 
-    st.subheader("🔥 Live Matches")
-    for m in live:
-        st.write(f"🏏 {m.get('name')}")
-        st.caption(f"Match ID: {m.get('id')}")
-        st.divider()
-
-    st.subheader("📅 Upcoming Matches")
-    for m in upcoming:
-        st.write(f"🏏 {m.get('name')}")
-        st.caption(f"Match ID: {m.get('id')}")
-        st.divider()
-
-# ================= CREATE TEAM =================
+# ================= TAB 2 =================
 
 with tab2:
-    st.header("Create Fantasy Team")
+    st.header("Create Team")
 
     username = st.text_input("Username")
     match_id = st.text_input("Match ID")
-    players = st.text_area("Player IDs (comma separated)")
-    captain = st.text_input("Captain ID")
-    vice = st.text_input("Vice Captain ID")
 
-    if st.button("Save Team"):
+    if match_id:
+        squad_data = get_match_squad(match_id)
 
-        if not all([username, match_id, players, captain, vice]):
-            st.error("All fields are required.")
+        if squad_data:
+            team1 = squad_data.get("teamInfo", [])[0]
+            team2 = squad_data.get("teamInfo", [])[1]
+
+            st.subheader("Available Players")
+
+            players = squad_data.get("players", [])
+            player_options = {p["name"]: p["id"] for p in players}
+
+            selected_players = st.multiselect("Select 11 Players", list(player_options.keys()))
+
+            captain = st.selectbox("Select Captain", selected_players)
+            vice = st.selectbox("Select Vice Captain", selected_players)
+
+            match_started = squad_data.get("matchStarted", False)
+
+            if match_started:
+                st.error("Match already started. Team creation locked.")
+            else:
+                if st.button("Save Team"):
+                    if len(selected_players) != 11:
+                        st.error("Select exactly 11 players.")
+                    else:
+                        teams_df = load_teams()
+
+                        new_row = pd.DataFrame([{
+                            "user_id": username,
+                            "match_id": match_id,
+                            "players": ",".join([player_options[p] for p in selected_players]),
+                            "captain": player_options[captain],
+                            "vice_captain": player_options[vice]
+                        }])
+
+                        teams_df = pd.concat([teams_df, new_row], ignore_index=True)
+                        save_teams(teams_df)
+
+                        st.success("Team Saved!")
+
         else:
-            teams_df = load_teams()
+            st.warning("Squad not available yet (before toss).")
 
-            new_row = pd.DataFrame([{
-                "user_id": username,
-                "match_id": match_id,
-                "players": players,
-                "captain": captain,
-                "vice_captain": vice
-            }])
-
-            teams_df = pd.concat([teams_df, new_row], ignore_index=True)
-            save_teams(teams_df)
-
-            st.success("Team saved successfully!")
-
-# ================= LEADERBOARD =================
+# ================= TAB 3 =================
 
 with tab3:
-    st.header("🏆 Match Leaderboard")
+    st.header("Leaderboard")
 
-    match_id_lb = st.text_input("Enter Match ID")
+    match_id_lb = st.text_input("Match ID for Leaderboard")
 
     if st.button("Generate Leaderboard"):
-
         teams_df = load_teams()
         teams_df = teams_df[teams_df["match_id"] == match_id_lb]
 
         if teams_df.empty:
-            st.warning("No teams found for this match.")
+            st.warning("No teams found.")
         else:
             scorecard = get_scorecard(match_id_lb)
-            player_stats = extract_player_stats(scorecard)
+            stats = extract_stats(scorecard)
 
             leaderboard = []
 
             for _, row in teams_df.iterrows():
-                pts = calculate_team_points(row, player_stats)
-                leaderboard.append({
-                    "User": row["user_id"],
-                    "Points": round(pts, 2)
-                })
+                pts = calculate_team_points(row, stats)
+                leaderboard.append({"User": row["user_id"], "Points": pts})
 
-            lb_df = pd.DataFrame(leaderboard)
-            lb_df = lb_df.sort_values(by="Points", ascending=False)
-
+            lb_df = pd.DataFrame(leaderboard).sort_values(by="Points", ascending=False)
             st.dataframe(lb_df, use_container_width=True)
