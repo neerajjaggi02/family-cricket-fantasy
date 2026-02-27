@@ -3,280 +3,214 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# ================= CONFIG =================
-
-st.set_page_config(page_title="Fantasy ICC League", layout="wide")
+st.set_page_config(page_title="Fantasy League Pro", layout="wide")
 
 CRICAPI_KEY = st.secrets["CRICAPI_KEY"]
 BASE_URL = "https://api.cricapi.com/v1"
-
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ================= SAFE API =================
 
-def safe_api_call(endpoint, params):
+def safe_api(endpoint, params):
     try:
         res = requests.get(f"{BASE_URL}/{endpoint}", params=params, timeout=10)
-        if res.status_code != 200:
-            return {}
-        try:
+        if res.status_code == 200:
             return res.json()
-        except:
-            return {}
+        return {}
     except:
         return {}
 
-# ================= SERIES =================
+# ================= SHEET HELPERS =================
 
-@st.cache_data(ttl=600)
-def get_active_icc_t20_series():
-    data = safe_api_call("series", {"apikey": CRICAPI_KEY, "offset": 0})
-    if data.get("status") != "success":
-        return []
-
-    today = datetime.utcnow().date()
-    active = []
-
-    for s in data.get("data", []):
-        name = s.get("name", "")
-
-        if "ICC" in name and "T20" in name and "Women" not in name:
-            try:
-                start = datetime.strptime(s["startDate"], "%Y-%m-%d").date()
-                end = datetime.strptime(s["endDate"], "%Y-%m-%d").date()
-
-                if end >= today:
-                    active.append(s)
-            except:
-                continue
-
-    return active
-
-@st.cache_data(ttl=300)
-def get_series_matches(series_id):
-    data = safe_api_call("seriesMatches", {
-        "apikey": CRICAPI_KEY,
-        "id": series_id
-    })
-    if data.get("status") != "success":
-        return []
-    return data.get("data", {}).get("matchList", [])
-
-# ================= MATCH DATA =================
-
-@st.cache_data(ttl=120)
-def get_match_squad(match_id):
-    data = safe_api_call("match_squad", {
-        "apikey": CRICAPI_KEY,
-        "id": match_id
-    })
-    if data.get("status") == "success":
-        return data.get("data", {})
-    return {}
-
-@st.cache_data(ttl=60)
-def get_scorecard(match_id):
-    data = safe_api_call("match_scorecard", {
-        "apikey": CRICAPI_KEY,
-        "id": match_id
-    })
-    if data.get("status") == "success":
-        return data.get("data", {})
-    return {}
-
-# ================= GOOGLE SHEETS =================
-
-def load_sheet(name, columns):
+def load_sheet(name, cols):
     try:
         return conn.read(worksheet=name)
     except:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=cols)
 
 def save_sheet(name, df):
     conn.update(worksheet=name, data=df)
 
-# ================= FANTASY ENGINE =================
+# ================= ADMIN FETCH =================
 
-def calculate_points(player):
-    return (
-        int(player.get("runs", 0)) * 1 +
-        int(player.get("wickets", 0)) * 25 +
-        int(player.get("catches", 0)) * 8
-    )
+def fetch_and_cache_matches():
+    data = safe_api("currentMatches", {
+        "apikey": CRICAPI_KEY,
+        "offset": 0
+    })
 
-def extract_stats(scorecard):
-    stats = {}
-    for inning in scorecard.get("scorecard", []):
-        for batter in inning.get("batting", []):
-            stats[batter["id"]] = {
-                "runs": batter.get("runs", 0),
-                "wickets": 0,
-                "catches": 0
-            }
-        for bowler in inning.get("bowling", []):
-            pid = bowler["id"]
-            if pid not in stats:
-                stats[pid] = {}
-            stats[pid]["wickets"] = bowler.get("wickets", 0)
-    return stats
+    if data.get("status") != "success":
+        return
 
-def calculate_team_points(row, stats):
-    total = 0
-    players = row["players"].split(",")
-    for pid in players:
-        pts = calculate_points(stats.get(pid.strip(), {}))
-        if pid.strip() == row["captain"]:
-            pts *= 2
-        elif pid.strip() == row["vice_captain"]:
-            pts *= 1.5
-        total += pts
-    return total
+    matches = data.get("data", [])
+
+    df = pd.DataFrame([{
+        "match_id": m["id"],
+        "series": m.get("series"),
+        "name": m["name"],
+        "matchStarted": m.get("matchStarted"),
+        "last_updated": datetime.utcnow()
+    } for m in matches])
+
+    save_sheet("matches_cache", df)
+
+def fetch_and_cache_squad(match_id):
+    data = safe_api("match_squad", {
+        "apikey": CRICAPI_KEY,
+        "id": match_id
+    })
+
+    if data.get("status") != "success":
+        return
+
+    squad = data.get("data", {})
+    players = squad.get("players", [])
+    playing_xi = squad.get("playing11", [])
+
+    df = pd.DataFrame([{
+        "match_id": match_id,
+        "player_id": p["id"],
+        "player_name": p["name"],
+        "playing11": p["name"] in playing_xi
+    } for p in players])
+
+    save_sheet("squad_cache", df)
 
 # ================= UI =================
 
-tab1, tab2, tab3 = st.tabs(["🏏 Active ICC T20", "📝 Create Team", "🏆 Leaderboard"])
+tab1, tab2, tab3 = st.tabs(["🔎 Search Matches", "📝 Create Team", "🏆 Leaderboard"])
 
-# ================= TAB 1 =================
+# ================= TAB 1 SEARCH =================
 
 with tab1:
-    st.header("Active ICC Men's T20 Series")
+    st.header("Search Series or Matches")
 
-    series_list = get_active_icc_t20_series()
+    if st.button("🔄 Admin Refresh Matches"):
+        fetch_and_cache_matches()
+        st.success("Matches Updated")
 
-    if not series_list:
-        st.warning("No active ICC T20 series found.")
-    else:
-        series = st.selectbox(
-            "Select Series",
-            series_list,
-            format_func=lambda x: x["name"],
-            key="series_select"
-        )
+    matches_df = load_sheet("matches_cache", 
+        ["match_id","series","name","matchStarted","last_updated"])
 
-        matches = get_series_matches(series["id"])
+    search = st.text_input("Search by Series or Match Name", key="search_box")
 
-        for m in matches:
-            st.write(f"🏏 {m['name']}")
-            st.caption(f"Match ID: {m['id']}")
-            st.caption(f"Started: {m.get('matchStarted')}")
-            st.divider()
+    if not matches_df.empty:
+        filtered = matches_df[
+            matches_df["series"].str.contains(search, case=False, na=False) |
+            matches_df["name"].str.contains(search, case=False, na=False)
+        ]
 
-# ================= TAB 2 =================
+        st.dataframe(filtered)
+
+# ================= TAB 2 CREATE TEAM =================
 
 with tab2:
-    st.header("Create Team & Join Contest")
+    st.header("Create Team")
 
-    username = st.text_input("Username", key="username_input")
-    match_id = st.text_input("Match ID", key="create_match_id")
+    username = st.text_input("Username", key="username")
+    match_id = st.text_input("Match ID", key="match_id_create")
 
-    contests_df = load_sheet("contests", ["contest_id","match_id","contest_name"])
-    teams_df = load_sheet("teams", ["user_id","match_id","contest_id","players","captain","vice_captain"])
+    squad_df = load_sheet("squad_cache",
+        ["match_id","player_id","player_name","playing11"])
 
     if match_id:
-        squad = get_match_squad(match_id)
 
-        if squad:
-            players = squad.get("players", [])
-            playing_xi = squad.get("playing11", [])
+        if st.button("🔄 Fetch Squad (Admin Only)"):
+            fetch_and_cache_squad(match_id)
+            st.success("Squad Cached")
 
-            player_map = {p["name"]: p["id"] for p in players}
+        match_squad = squad_df[squad_df["match_id"] == match_id]
+
+        if not match_squad.empty:
+
+            player_map = dict(zip(
+                match_squad["player_name"],
+                match_squad["player_id"]
+            ))
 
             selected = st.multiselect(
                 "Select 11 Players",
                 list(player_map.keys()),
-                key="player_multiselect"
+                key="player_select"
             )
 
-            captain = st.selectbox(
-                "Captain",
-                selected,
-                key="captain_select"
-            )
-
-            vice = st.selectbox(
-                "Vice Captain",
-                selected,
-                key="vice_select"
-            )
+            captain = st.selectbox("Captain", selected, key="captain")
+            vice = st.selectbox("Vice Captain", selected, key="vice")
 
             st.subheader("Playing XI Status")
 
-            for p in players:
-                name = p["name"]
-                if name in playing_xi:
-                    st.write(f"🟢 {name}")
+            for _, row in match_squad.iterrows():
+                if row["playing11"]:
+                    st.write(f"🟢 {row['player_name']}")
                 else:
-                    st.write(f"🔴 {name}")
+                    st.write(f"🔴 {row['player_name']}")
 
-            match_started = squad.get("matchStarted") is True
+            match_info = load_sheet("matches_cache", [])
+            started = match_info[
+                match_info["match_id"] == match_id
+            ]["matchStarted"].values
 
-            if match_started:
-                st.error("Match already started. Joining locked.")
+            if len(started) > 0 and started[0]:
+                st.error("Match Started. Team Locked.")
             else:
-                contest_name = st.text_input("Contest Name", key="contest_name_input")
-
-                if st.button("Create / Join Contest", key="join_contest_btn"):
+                if st.button("Save Team"):
                     if len(selected) != 11:
-                        st.error("Select exactly 11 players.")
+                        st.error("Select 11 players")
                     else:
-                        contest_id = f"{match_id}_{contest_name}"
+                        teams_df = load_sheet("teams", 
+                            ["user_id","match_id","contest_id","players","captain","vice_captain"])
 
-                        if contest_id not in contests_df["contest_id"].values:
-                            new_contest = pd.DataFrame([{
-                                "contest_id": contest_id,
-                                "match_id": match_id,
-                                "contest_name": contest_name
-                            }])
-                            contests_df = pd.concat([contests_df, new_contest], ignore_index=True)
-                            save_sheet("contests", contests_df)
-
-                        new_team = pd.DataFrame([{
+                        new_row = pd.DataFrame([{
                             "user_id": username,
                             "match_id": match_id,
-                            "contest_id": contest_id,
+                            "contest_id": "default",
                             "players": ",".join([player_map[p] for p in selected]),
                             "captain": player_map[captain],
                             "vice_captain": player_map[vice]
                         }])
 
-                        teams_df = pd.concat([teams_df, new_team], ignore_index=True)
+                        teams_df = pd.concat([teams_df, new_row], ignore_index=True)
                         save_sheet("teams", teams_df)
 
-                        st.success("Joined Contest Successfully!")
+                        st.success("Team Saved")
+
+        else:
+            st.warning("No squad cached. Ask admin to fetch squad.")
 
 # ================= TAB 3 =================
 
 with tab3:
-    st.header("Contest Leaderboard")
+    st.header("Leaderboard")
 
-    match_id_lb = st.text_input("Match ID", key="leaderboard_match_id")
-    contest_id_lb = st.text_input("Contest ID", key="leaderboard_contest_id")
+    match_id_lb = st.text_input("Match ID", key="lb_match")
 
-    if st.button("Generate Leaderboard", key="leaderboard_btn"):
+    if st.button("Generate Leaderboard"):
+
         teams_df = load_sheet("teams", [])
+        squad_df = load_sheet("squad_cache", [])
 
-        filtered = teams_df[
-            (teams_df["match_id"] == match_id_lb) &
-            (teams_df["contest_id"] == contest_id_lb)
-        ]
+        filtered = teams_df[teams_df["match_id"] == match_id_lb]
 
         if filtered.empty:
-            st.warning("No entries.")
+            st.warning("No teams found")
         else:
-            scorecard = get_scorecard(match_id_lb)
-            stats = extract_stats(scorecard)
-
             leaderboard = []
 
             for _, row in filtered.iterrows():
-                pts = calculate_team_points(row, stats)
+                total = 0
+                players = row["players"].split(",")
+
+                for pid in players:
+                    if pid in squad_df["player_id"].values:
+                        total += 10  # demo static points
+
                 leaderboard.append({
                     "User": row["user_id"],
-                    "Points": pts
+                    "Points": total
                 })
 
             lb = pd.DataFrame(leaderboard).sort_values(by="Points", ascending=False)
-            st.dataframe(lb, use_container_width=True)
+            st.dataframe(lb)
