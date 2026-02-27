@@ -109,7 +109,12 @@ tab1, tab2, tab3 = st.tabs(["🔎 Search Matches", "📝 Create Team", "🏆 Lea
 
 with tab1:
     st.header("Search Series or Matches")
-
+if st.button("🧪 Debug API Response"):
+    data = safe_api("currentMatches", {
+        "apikey": CRICAPI_KEY,
+        "offset": 0
+    })
+    st.write(data)
     if st.button("🔄 Admin Refresh Matches", key="refresh_matches"):
         fetch_and_cache_matches()
         st.success("Matches Updated")
