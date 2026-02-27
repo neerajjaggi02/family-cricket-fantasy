@@ -8,7 +8,7 @@ from streamlit_gsheets import GSheetsConnection
 
 # ================= CONFIG =================
 
-CRICAPI_KEY = "YOUR_CRICAPI_KEY"
+CRICAPI_KEY = "97efb164-e552-4332-93a8-60aaaefe0f1d"
 BASE_URL = "https://api.cricapi.com/v1"
 
 st.set_page_config(page_title="Fantasy Pro", layout="wide")
